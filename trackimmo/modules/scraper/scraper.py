@@ -1,6 +1,6 @@
 """
-Classe principale du scraper ImmoData.
-Coordonne le processus de scraping de bout en bout.
+Main ImmoData scraper class.
+Coordinates the end-to-end scraping process.
 """
 
 import os
@@ -10,6 +10,9 @@ import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .url_generator import AdaptiveUrlGenerator
 
 from trackimmo.utils.logger import get_logger
 from .geo_divider import GeoDivider
@@ -20,23 +23,23 @@ logger = get_logger(__name__)
 
 class ImmoDataScraper:
     """
-    Scraper pour ImmoData. Extrait les propriétés immobilières
-    pour une ville donnée en utilisant un découpage géographique.
+    Scraper for ImmoData. Extracts real estate properties
+    for a given city using geographic division.
     """
     
     def __init__(self, output_dir: str = "data/scraped"):
         """
-        Initialise le scraper.
+        Initialize the scraper.
         
         Args:
-            output_dir: Répertoire pour les fichiers de sortie
+            output_dir: Directory for output files
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.geo_divider = GeoDivider()
         self.url_generator = UrlGenerator()
         
-        logger.info(f"ImmoDataScraper initialisé (dossier de sortie: {self.output_dir})")
+        logger.info(f"ImmoDataScraper initialized (output directory: {self.output_dir})")
     
     def scrape_city(
         self,
@@ -48,32 +51,32 @@ class ImmoDataScraper:
         output_file: Optional[str] = None
     ) -> str:
         """
-        Extrait toutes les propriétés pour une ville donnée.
+        Extracts all properties for a given city.
         
         Args:
-            city_name: Nom de la ville
-            postal_code: Code postal
-            property_types: Types de propriétés ["house", "apartment"]
-            start_date: Date de début (MM/YYYY)
-            end_date: Date de fin (MM/YYYY)
-            output_file: Chemin du fichier CSV de sortie
+            city_name: City name
+            postal_code: Postal code
+            property_types: Property types ["house", "apartment"]
+            start_date: Start date (MM/YYYY)
+            end_date: End date (MM/YYYY)
+            output_file: Output CSV file path
         
         Returns:
-            str: Chemin du fichier CSV généré
+            str: Path to the generated CSV file
         """
-        logger.info(f"Début du scraping pour {city_name} ({postal_code})")
+        logger.info(f"Starting scraping for {city_name} ({postal_code})")
         
         if not property_types:
             property_types = ["house", "apartment"]
         
-        # Déterminer le nom du fichier de sortie
+        # Determine output file name
         if not output_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = self.output_dir / f"{city_name}_{postal_code}_{timestamp}.csv"
         else:
             output_file = Path(output_file)
         
-        # Exécuter le scraping de manière asynchrone
+        # Run scraping asynchronously
         all_properties = asyncio.run(self._scrape_city_async(
             city_name=city_name,
             postal_code=postal_code,
@@ -82,13 +85,13 @@ class ImmoDataScraper:
             end_date=end_date
         ))
         
-        # Dédupliquer les propriétés
+        # Deduplicate properties
         unique_properties = self._deduplicate_properties(all_properties)
-        logger.info(f"Extraction terminée: {len(unique_properties)} propriétés uniques extraites")
+        logger.info(f"Extraction completed: {len(unique_properties)} unique properties extracted")
         
-        # Exporter vers CSV
+        # Export to CSV
         self._export_to_csv(unique_properties, output_file)
-        logger.info(f"Données exportées vers {output_file}")
+        logger.info(f"Data exported to {output_file}")
         
         return str(output_file)
     
@@ -101,101 +104,141 @@ class ImmoDataScraper:
         end_date: str
     ) -> List[Dict[str, Any]]:
         """
-        Implémentation asynchrone du scraping.
+        Asynchronous implementation of scraping with adaptive subdivision.
+        Collects properties from all levels, including subdivided URLs.
         
         Returns:
-            List[Dict]: Liste des propriétés extraites
+            List[Dict]: List of extracted properties
         """
-        # 1. Découper la ville en rectangles géographiques
+        # 1. Divide the city into geographic rectangles
         rectangles = self.geo_divider.divide_city_area(city_name, postal_code)
-        logger.info(f"Ville divisée en {len(rectangles)} rectangles")
+        logger.info(f"City divided into {len(rectangles)} rectangles")
         
-        # 2. Générer les URLs pour chaque rectangle
+        # 2. Generate initial URLs (level 1) by rectangle, month and property type
         urls = self.url_generator.generate_urls(
             rectangles, property_types, start_date, end_date
         )
-        logger.info(f"Génération de {len(urls)} URLs")
+        logger.info(f"Generated {len(urls)} initial URLs")
         
-        # 3. Extraire les propriétés via le navigateur
+        # 3. Create adaptive generator and browser manager
+        from .url_generator import AdaptiveUrlGenerator
+        adaptive_generator = AdaptiveUrlGenerator(self.url_generator)
         browser_manager = BrowserManager()
-        properties = await browser_manager.extract_properties(urls)
-        logger.info(f"Extraction terminée: {len(properties)} propriétés extraites")
         
-        return properties
+        # 4. Extract properties with adaptive approach
+        all_properties = []
+        
+        for i, url_data in enumerate(urls):
+            logger.info(f"Processing URL {i+1}/{len(urls)}")
+            
+            # Extract with adaptation if necessary - now always collect properties
+            properties, count, was_subdivided = await browser_manager.extract_properties_with_count(
+                url_data, adaptive_generator
+            )
+            
+            # Always add properties, regardless of subdivision status
+            if properties:
+                all_properties.extend(properties)
+                logger.info(f"Added {len(properties)} properties from URL {i+1}")
+                
+                # Log whether this URL was subdivided
+                if was_subdivided:
+                    logger.info(f"Properties include those from main URL and its subdivisions")
+            
+            logger.info(f"Total: {len(all_properties)} properties extracted so far")
+            
+            # Pause between URLs to avoid overloading the server
+            await asyncio.sleep(1.0)
+        
+        logger.info(f"Extraction completed: {len(all_properties)} properties extracted in total (before deduplication)")
+        return all_properties
     
     def _deduplicate_properties(self, properties: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Élimine les doublons dans les propriétés extraites.
+        Eliminates duplicates in extracted properties.
         
         Args:
-            properties: Liste des propriétés extraites
+            properties: List of extracted properties
         
         Returns:
-            List[Dict]: Liste des propriétés dédupliquées
+            List[Dict]: List of deduplicated properties
         """
-        # Créer un DataFrame pour faciliter la déduplication
+        # Create DataFrame to facilitate deduplication
         if not properties:
+            logger.warning("No properties to deduplicate")
             return []
         
         df = pd.DataFrame(properties)
+        logger.info(f"Deduplicating {len(df)} properties")
         
-        # Identifier les colonnes essentielles pour la déduplication
+        # Identify essential columns for deduplication (exclude postal_code)
         duplicate_keys = ["address", "city", "price", "surface", "rooms", "sale_date"]
         available_keys = [key for key in duplicate_keys if key in df.columns]
         
         if not available_keys:
-            logger.warning("Impossible de dédupliquer: colonnes essentielles manquantes")
+            logger.warning("Unable to deduplicate: essential columns missing")
             return properties
         
-        # Dédupliquer sur les colonnes essentielles
+        # Deduplicate on essential columns
         df_unique = df.drop_duplicates(subset=available_keys)
-        logger.info(f"Déduplication: {len(df) - len(df_unique)} doublons supprimés")
+        logger.info(f"Deduplication: {len(df) - len(df_unique)} duplicates removed")
         
         return df_unique.to_dict("records")
     
     def _export_to_csv(self, properties: List[Dict[str, Any]], output_file: Path) -> None:
         """
-        Exporte les propriétés vers un fichier CSV.
+        Exports properties to a CSV file.
         
         Args:
-            properties: Liste des propriétés
-            output_file: Chemin du fichier de sortie
+            properties: List of properties
+            output_file: Output file path
         """
         if not properties:
-            logger.warning("Aucune propriété à exporter")
-            # Créer un fichier vide pour indiquer que le processus s'est terminé
+            logger.warning("No properties to export")
+            # Create empty file to indicate the process has completed
             with open(output_file, "w") as f:
-                f.write("adresse,ville,code_postal,prix,surface,pieces,date_vente,url\n")
+                f.write("address,city,price,surface,rooms,sale_date,property_type,property_url\n")
             return
         
-        # Créer le DataFrame et réorganiser les colonnes
+        # Create DataFrame and reorganize columns
         df = pd.DataFrame(properties)
         
-        # Réorganiser/renommer les colonnes si elles existent
+        # Remove unwanted columns if present
+        for col in ["postal_code", "source_url"]:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+        
+        # Remove rows where all main columns are empty or zero (after header)
+        main_cols = ["address", "city", "price", "surface", "rooms", "sale_date"]
+        if all(col in df.columns for col in main_cols):
+            df = df[~((df[main_cols].isnull() | (df[main_cols] == 0) | (df[main_cols] == "")).all(axis=1))]
+        
+        # Reorganize/rename columns if they exist
         column_mapping = {
-            "address": "adresse",
-            "city": "ville",
-            "postal_code": "code_postal",
-            "price": "prix",
+            "address": "address",
+            "city": "city",
+            "price": "price",
             "surface": "surface",
-            "rooms": "pieces",
-            "sale_date": "date_vente",
-            "property_url": "url"
+            "rooms": "rooms",
+            "sale_date": "sale_date",
+            "property_type": "property_type",
+            "property_url": "property_url"
         }
         
-        # Appliquer le mapping seulement pour les colonnes existantes
+        # Apply mapping only for existing columns
         existing_columns = {k: v for k, v in column_mapping.items() if k in df.columns}
         if existing_columns:
             df = df.rename(columns=existing_columns)
         
-        # Définir l'ordre des colonnes principal (utilise uniquement les colonnes existantes)
+        # Define main column order (use only existing columns)
         ordered_columns = [v for k, v in column_mapping.items() 
                           if k in df.columns and v in df.columns]
         
-        # Ajouter les colonnes supplémentaires qui n'étaient pas dans le mapping
+        # Add additional columns not in the mapping
         other_columns = [col for col in df.columns if col not in ordered_columns]
         final_columns = ordered_columns + other_columns
         
-        # Réorganiser et sauvegarder
+        # Reorganize and save
         df = df[final_columns]
+        logger.info(f"Exporting {len(df)} properties to CSV")
         df.to_csv(output_file, index=False)

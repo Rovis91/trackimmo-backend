@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--postal_code", required=True, help="Postal code")
     parser.add_argument("--output", default=None, help="Output CSV file")
     parser.add_argument("--start_date", default="01/2023", help="Start date (MM/YYYY)")
-    parser.add_argument("--end_date", default="06/2024", help="End date (MM/YYYY)")
+    parser.add_argument("--end_date", default="01/2023", help="End date (MM/YYYY)")
     parser.add_argument("--types", default="house,apartment", 
                         help="Property types (comma-separated: house,apartment,land,commercial,other)")
     

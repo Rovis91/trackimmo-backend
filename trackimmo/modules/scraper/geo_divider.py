@@ -1,6 +1,6 @@
 """
-Module de découpage géographique pour le scraping.
-Divise une ville en rectangles pour assurer une couverture complète.
+Geographic division module for web scraping.
+Divides a city into rectangles to ensure complete coverage.
 """
 
 import os
@@ -18,21 +18,21 @@ logger = get_logger(__name__)
 
 class GeoDivider:
     """
-    Divise une ville en rectangles géographiques pour le scraping.
+    Divides a city into geographic rectangles for scraping.
     """
     
     def __init__(self):
         """
-        Initialise le diviseur géographique avec les paramètres par défaut.
+        Initialize the geographic divider with default parameters.
         """
-        # Paramètres de dimension du rectangle de scraping (à zoom 12)
-        self.rectangle_width_km = 17  # Largeur en km
-        self.rectangle_height_km = 14  # Hauteur en km
+        # Scraping rectangle dimension parameters (at zoom level 12)
+        self.rectangle_width_km = 17  # Width in km
+        self.rectangle_height_km = 14  # Height in km
         self.zoom_level = 12
-        self.overlap_percent = 10  # Chevauchement entre rectangles (%)
+        self.overlap_percent = 10  # Overlap between rectangles (%)
         
-        # Constantes de conversion
-        self.km_per_degree_lat = 110.574  # Constante
+        # Conversion constants
+        self.km_per_degree_lat = 110.574  # Constant
     
     def divide_city_area(
         self,
@@ -41,39 +41,39 @@ class GeoDivider:
         overlap_percent: Optional[float] = None
     ) -> List[Dict]:
         """
-        Divise une ville en rectangles géographiques avec chevauchement.
+        Divides a city into geographic rectangles with overlap.
         
         Args:
-            city_name: Nom de la ville
-            postal_code: Code postal
-            overlap_percent: Pourcentage de chevauchement
+            city_name: Name of the city
+            postal_code: Postal code
+            overlap_percent: Overlap percentage
         
         Returns:
-            List[Dict]: Liste des rectangles avec leurs coordonnées
+            List[Dict]: List of rectangles with their coordinates
         """
         if overlap_percent is not None:
             self.overlap_percent = overlap_percent
         
         logger.info(f"Dividing city area for {city_name} ({postal_code})")
         
-        # 1. Obtenir les coordonnées de la ville
+        # 1. Get city coordinates
         coordinates = self._get_city_coordinates(city_name, postal_code)
         if not coordinates:
-            logger.error(f"Impossible d'obtenir les coordonnées pour {city_name} ({postal_code})")
+            logger.error(f"Unable to get coordinates for {city_name} ({postal_code})")
             return []
         
-        # 2. Calculer le rectangle englobant
+        # 2. Calculate bounding rectangle
         bounds = self._calculate_bounding_rectangle(coordinates)
-        logger.info(f"Bounding rectangle calculé: {bounds}")
+        logger.info(f"Calculated bounding rectangle: {bounds}")
         
-        # 3. Calculer les dimensions du rectangle de scraping
+        # 3. Calculate scraping rectangle dimensions
         rect_dimensions = self._calculate_rectangle_dimensions(
-            (bounds[0] + bounds[2]) / 2  # Latitude moyenne
+            (bounds[0] + bounds[2]) / 2  # Average latitude
         )
         
-        # 4. Diviser en sous-rectangles
+        # 4. Divide into sub-rectangles
         rectangles = self._divide_into_subrectangles(bounds, rect_dimensions)
-        logger.info(f"Ville divisée en {len(rectangles)} rectangles")
+        logger.info(f"City divided into {len(rectangles)} rectangles")
         
         return rectangles
     
@@ -83,12 +83,12 @@ class GeoDivider:
         postal_code: str
     ) -> List[Tuple[float, float]]:
         """
-        Obtient les coordonnées d'une ville via l'API d'adresses.
+        Gets city coordinates via the address API.
         
         Returns:
-            List[Tuple[float, float]]: Liste de coordonnées (lat, lon)
+            List[Tuple[float, float]]: List of coordinates (lat, lon)
         """
-        # Utiliser l'API adresse pour obtenir les coordonnées
+        # Use address API to get coordinates
         api_url = "https://api-adresse.data.gouv.fr/search/"
         
         try:
@@ -102,17 +102,17 @@ class GeoDivider:
             data = response.json()
             
             if not data.get("features"):
-                logger.warning(f"Aucune donnée trouvée pour {city_name} ({postal_code})")
+                logger.warning(f"No data found for {city_name} ({postal_code})")
                 return []
             
-            # Récupérer le centroïde et le bounding box pour construire les coordonnées
+            # Get centroid and bounding box to build coordinates
             feature = data["features"][0]
             center = feature["geometry"]["coordinates"]  # [lon, lat]
             
-            # Vérifier si le bounding box existe dans les propriétés
+            # Check if bounding box exists in properties
             if "bbox" in feature["properties"]:
                 bbox = feature["properties"]["bbox"]  # [min_lon, min_lat, max_lon, max_lat]
-                # Générer quelques points le long du bounding box
+                # Generate some points along the bounding box
                 coordinates = [
                     (bbox[1], bbox[0]),  # min_lat, min_lon
                     (bbox[1], bbox[2]),  # min_lat, max_lon
@@ -121,13 +121,13 @@ class GeoDivider:
                     (center[1], center[0])  # center_lat, center_lon
                 ]
             else:
-                # Si pas de bounding box, créer un carré autour du centre
-                # Avec une taille de 1km dans chaque direction
+                # If no bounding box, create a square around the center
+                # With a size of 1km in each direction
                 lat = center[1]
                 lon = center[0]
                 km_per_degree_lon = 111.320 * math.cos(math.radians(lat))
                 
-                # Calcul du delta (environ 1km dans chaque direction)
+                # Calculate delta (about 1km in each direction)
                 delta_lat = 1.0 / self.km_per_degree_lat
                 delta_lon = 1.0 / km_per_degree_lon
                 
@@ -142,7 +142,7 @@ class GeoDivider:
             return coordinates
             
         except Exception as e:
-            logger.error(f"Erreur lors de la récupération des coordonnées: {str(e)}")
+            logger.error(f"Error retrieving coordinates: {str(e)}")
             return []
     
     def _calculate_bounding_rectangle(
@@ -150,17 +150,17 @@ class GeoDivider:
         coordinates: List[Tuple[float, float]]
     ) -> Tuple[float, float, float, float]:
         """
-        Calcule le rectangle englobant un ensemble de coordonnées.
+        Calculates the bounding rectangle for a set of coordinates.
         
         Args:
-            coordinates: Liste de coordonnées (lat, lon)
+            coordinates: List of coordinates (lat, lon)
         
         Returns:
             Tuple[float, float, float, float]: (min_lat, min_lon, max_lat, max_lon)
         """
         if not coordinates:
-            logger.error("Aucune coordonnée fournie pour calculer le rectangle englobant")
-            # Valeurs par défaut centrées sur Paris
+            logger.error("No coordinates provided to calculate bounding rectangle")
+            # Default values centered on Paris
             return (48.8566, 2.3522 - 0.1, 48.8566 + 0.1, 2.3522 + 0.1)
         
         lats = [coord[0] for coord in coordinates]
@@ -178,18 +178,18 @@ class GeoDivider:
         latitude: float
     ) -> Tuple[float, float]:
         """
-        Calcule les dimensions d'un rectangle en degrés à une latitude donnée.
+        Calculates rectangle dimensions in degrees at a given latitude.
         
         Args:
-            latitude: Latitude à laquelle calculer les dimensions
+            latitude: Latitude at which to calculate dimensions
         
         Returns:
             Tuple[float, float]: (width_degrees, height_degrees)
         """
-        # Calcul des km par degré de longitude à cette latitude
+        # Calculate km per degree of longitude at this latitude
         km_per_degree_lon = 111.320 * math.cos(math.radians(latitude))
         
-        # Conversion des dimensions km -> degrés
+        # Convert dimensions km -> degrees
         width_degrees = self.rectangle_width_km / km_per_degree_lon
         height_degrees = self.rectangle_height_km / self.km_per_degree_lat
         
@@ -201,34 +201,34 @@ class GeoDivider:
         rect_dimensions: Tuple[float, float]
     ) -> List[Dict]:
         """
-        Divise un rectangle englobant en sous-rectangles avec chevauchement.
+        Divides a bounding rectangle into sub-rectangles with overlap.
         
         Args:
             bounds: (min_lat, min_lon, max_lat, max_lon)
             rect_dimensions: (width_degrees, height_degrees)
         
         Returns:
-            List[Dict]: Liste des rectangles résultants
+            List[Dict]: List of resulting rectangles
         """
         min_lat, min_lon, max_lat, max_lon = bounds
         rect_width, rect_height = rect_dimensions
         
-        # Dimensions totales
+        # Total dimensions
         total_width = max_lon - min_lon
         total_height = max_lat - min_lat
         
-        # Calcul du pas avec chevauchement
+        # Calculate step with overlap
         overlap_factor = self.overlap_percent / 100
         step_width = rect_width * (1 - overlap_factor)
         step_height = rect_height * (1 - overlap_factor)
         
-        # Calcul du nombre de pas
+        # Calculate number of steps
         lon_steps = max(1, math.ceil(total_width / step_width))
         lat_steps = max(1, math.ceil(total_height / step_height))
         
         logger.info(f"Grid size: {lon_steps}×{lat_steps} = {lon_steps * lat_steps} rectangles")
         
-        # Cas spécial: un seul rectangle
+        # Special case: single rectangle
         if lon_steps == 1 and lat_steps == 1:
             center_lat = (min_lat + max_lat) / 2
             center_lon = (min_lon + max_lon) / 2
@@ -243,12 +243,12 @@ class GeoDivider:
                 "zoom": self.zoom_level
             }]
         
-        # Génération des rectangles
+        # Generate rectangles
         rectangles = []
         
         for i in range(lat_steps):
             for j in range(lon_steps):
-                # Pour distribuer uniformément
+                # For uniform distribution
                 if lon_steps > 1:
                     sub_min_lon = min_lon + (j * (total_width - rect_width) / (lon_steps - 1))
                 else:
@@ -259,11 +259,11 @@ class GeoDivider:
                 else:
                     sub_min_lat = min_lat
                 
-                # Calculer les limites
+                # Calculate limits
                 sub_max_lon = sub_min_lon + rect_width
                 sub_max_lat = sub_min_lat + rect_height
                 
-                # Ajouter le rectangle
+                # Add rectangle
                 center_lat = (sub_min_lat + sub_max_lat) / 2
                 center_lon = (sub_min_lon + sub_max_lon) / 2
                 
