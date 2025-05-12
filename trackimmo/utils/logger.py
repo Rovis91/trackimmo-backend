@@ -1,44 +1,48 @@
 """
-Logger module for TrackImmo backend.
-
-This module configures loguru for structured logging.
+Configuration du logger pour TrackImmo.
 """
-import sys
+
 import os
-from loguru import logger
-from trackimmo.config import settings
+import sys
+import logging
+from pathlib import Path
 
-
-# Remove default logger
-logger.remove()
-
-# Add console logger
-logger.add(
-    sys.stderr,
-    level=settings.LOG_LEVEL,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-)
-
-# Add file logger for errors
-os.makedirs("logs", exist_ok=True)
-logger.add(
-    "logs/error.log",
-    level="ERROR",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-    rotation="10 MB",
-    retention="1 month",
-)
-
-# Add file logger for all levels
-logger.add(
-    "logs/trackimmo.log",
-    level=settings.LOG_LEVEL,
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-    rotation="10 MB",
-    retention="1 week",
-)
-
+# Créer le dossier de logs s'il n'existe pas
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
 
 def get_logger(name):
-    """Get a logger with the specified name."""
-    return logger.bind(name=name) 
+    """
+    Crée et configure un logger pour le module spécifié.
+    
+    Args:
+        name: Nom du module
+        
+    Returns:
+        logging.Logger: Logger configuré
+    """
+    logger = logging.getLogger(name)
+    
+    # Ne pas reconfigurer si déjà fait
+    if logger.handlers:
+        return logger
+        
+    logger.setLevel(logging.INFO)
+    
+    # Formatage
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    
+    # Handler console
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # Handler fichier
+    file_handler = logging.FileHandler(LOG_DIR / f"{name.split('.')[-1]}.log")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    return logger

@@ -54,7 +54,7 @@ For detailed task status, see [TASKS.md](TASKS.md).
 
 4. Install Playwright browsers
    ```
-   playwright install
+   playwright install --with-deps
    ```
 
 5. Create a `.env` file from the example
@@ -131,3 +131,48 @@ uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
 ## License
 
 MIT License - See [LICENSE](LICENSE) for details.
+
+## Running Tests
+
+### Scraper Tests
+
+The scraper module can be tested in both mock mode and real scraping mode:
+
+#### Mock Mode (Default)
+
+This mode uses mock data instead of real web scraping, making it fast and reliable for testing:
+
+```bash
+python -m trackimmo.tests.test_scraper
+```
+
+#### Real Scraping Mode
+
+This mode performs actual web scraping. It requires an internet connection and the Playwright browsers to be installed:
+
+```bash
+python -m trackimmo.tests.test_scraper --real
+```
+
+## Modules
+
+### Scraper Module
+
+The scraper module handles the extraction of property data from ImmoData. It includes:
+
+- `ImmoDataScraper`: Main scraper class
+- `BrowserManager`: Manages browser automation using Playwright
+- `URLGenerator`: Creates URLs for scraping
+- `GeoDivider`: Divides geographic areas into smaller regions
+
+### API Module
+
+(To be implemented)
+
+### Models
+
+Data models for the application are defined in `trackimmo/models/data_models.py`.
+
+## Configuration
+
+Configuration settings are defined in `trackimmo/config.py` and can be overridden using environment variables or a `.env` file.
