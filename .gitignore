@@ -63,6 +63,8 @@ logs/
 # Database
 *.db
 *.sqlite3
+/data
+/test_output
 
 # Project specific
 .DS_Store

@@ -30,7 +30,7 @@ For detailed task status, see [TASKS.md](TASKS.md).
 ### Prerequisites
 
 - Python 3.10+
-- PostgreSQL database (or SQLite for development)
+- Supabase account for database operations
 - Playwright browsers
 
 ### Setup
@@ -62,14 +62,30 @@ For detailed task status, see [TASKS.md](TASKS.md).
    cp .env.example .env
    ```
    
-6. Update the `.env` file with your specific settings
+6. Update the `.env` file with your specific settings, including Supabase credentials:
+   ```
+   SUPABASE_URL=https://your-project-url.supabase.co
+   SUPABASE_KEY=your-supabase-api-key
+   ```
+
+## Supabase Integration
+
+This project uses Supabase as the database backend. To setup:
+
+1. Create a Supabase account at [supabase.com](https://supabase.com)
+2. Create a new project
+3. Get your project URL and API key from the project settings
+4. Add these credentials to your `.env` file as described above
+
+The database schema follows the SQLAlchemy models defined in `trackimmo/models/db_models.py`. Make sure your Supabase database has the same tables and columns as defined in these models.
 
 ## Configuration
 
 The application uses environment variables for configuration. See [config.py](trackimmo/config.py) for all available options.
 
 Key settings include:
-- `DATABASE_URL`: Connection string for your database
+- `SUPABASE_URL`: URL for your Supabase project
+- `SUPABASE_KEY`: API key for Supabase authentication
 - `SECRET_KEY`: Secret key for JWT token generation
 - `SCRAPER_HEADLESS`: Whether to run browser in headless mode
 - `METRICS_PORT`: Port for the metrics server
@@ -102,7 +118,7 @@ uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
   - `modules/`: Core functionality
     - `scraper.py`: Web scraping module
     - `processor.py`: Data enrichment
-    - `db_manager.py`: Database operations
+    - `db_manager.py`: Database operations (Supabase integration)
   - `utils/`: Utility functions
     - `logger.py`: Logging configuration
     - `metrics.py`: Performance metrics
