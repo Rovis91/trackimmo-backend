@@ -160,13 +160,13 @@ class PriceEstimationService(ProcessorBase):
     
     def get_city_growth_rates(self, city_ids: List[str]) -> Dict[str, float]:
         """
-        Récupère les taux d'évolution annuels par ville et type de bien.
+        Get growth rates using city average prices.
         
         Args:
-            city_ids: Liste des IDs de villes
+            city_ids: List of city IDs
             
         Returns:
-            Dict[str, float]: Dictionnaire {city_id_property_type: taux_annuel}
+            Dict mapping city_id_property_type to growth rate
         """
         if not city_ids or len(city_ids) == 0:
             return {}
@@ -177,106 +177,40 @@ class PriceEstimationService(ProcessorBase):
             with self.db_manager as db:
                 supabase_client = db.get_client()
                 
-                # Récupérer les adresses pour les villes spécifiées
-                self.logger.info(f"Récupération des adresses pour {len(city_ids)} villes")
+                # Fetch city price data directly
+                self.logger.info(f"Retrieving average prices for {len(city_ids)} cities")
                 
-                # Récupérer toutes les données avec les ventes d'adresses par année
-                # Note: On ne peut pas faire une requête SQL complexe directement, on va calculer en Python
-                addresses = []
+                response = supabase_client.table("cities").select(
+                    "city_id,house_price_avg,apartment_price_avg"
+                ).in_("city_id", city_ids).execute()
                 
-                # Limite à 100 villes par requête pour éviter de surcharger l'API
-                batch_size = 100
-                for i in range(0, len(city_ids), batch_size):
-                    city_batch = city_ids[i:i + batch_size]
-                    self.logger.info(f"Récupération du lot {i//batch_size + 1} de villes ({len(city_batch)} villes)")
-                    
-                    # Récupérer les adresses avec les champs nécessaires pour calculer l'évolution
-                    response = supabase_client.table("addresses").select(
-                        "city_id,property_type,sale_date,price,surface"
-                    ).in_("city_id", city_batch).execute()
-                    
-                    if response.data:
-                        addresses.extend(response.data)
-                
-                self.logger.info(f"Récupéré {len(addresses)} adresses des villes spécifiées")
-                
-                if not addresses:
-                    self.logger.warning("Aucune adresse trouvée pour calculer les taux d'évolution")
+                if not response.data:
+                    self.logger.warning("No average price data found for cities")
                     return {}
                 
-                # Convertir en DataFrame pour faciliter l'analyse
-                df_addresses = pd.DataFrame(addresses)
-                
-                # Convertir les dates en datetime pour l'extraction d'année
-                df_addresses['sale_date'] = pd.to_datetime(df_addresses['sale_date'], errors='coerce')
-                df_addresses['year'] = df_addresses['sale_date'].dt.year
-                
-                # Filtrer les entrées invalides
-                df_valid = df_addresses.dropna(subset=['year', 'price', 'surface', 'city_id', 'property_type'])
-                df_valid = df_valid[df_valid['surface'] > 0]
-                
-                if df_valid.empty:
-                    self.logger.warning("Aucune donnée valide pour calculer les taux d'évolution")
-                    return {}
-                
-                # Calculer le prix moyen par m² pour chaque ville, type et année
-                yearly_averages = df_valid.groupby(['city_id', 'property_type', 'year']).apply(
-                    lambda x: (x['price'] / x['surface']).mean()
-                ).reset_index(name='avg_price_per_m2')
-                
-                # Trier pour faciliter le calcul des taux d'évolution
-                yearly_averages = yearly_averages.sort_values(['city_id', 'property_type', 'year'])
-                
-                # Calculer les taux d'évolution annuels
-                growth_rates = []
-                
-                # Regrouper par ville et type de bien
-                for (city, prop_type), group in yearly_averages.groupby(['city_id', 'property_type']):
-                    # S'assurer qu'il y a au moins deux années pour calculer l'évolution
-                    if len(group) >= 2:
-                        # Trier par année
-                        sorted_group = group.sort_values('year')
-                        
-                        # Calculer les taux de croissance entre années consécutives
-                        for i in range(len(sorted_group) - 1):
-                            current_year = sorted_group.iloc[i]
-                            next_year = sorted_group.iloc[i + 1]
-                            
-                            if current_year['avg_price_per_m2'] > 0 and next_year['avg_price_per_m2'] > 0:
-                                growth = (next_year['avg_price_per_m2'] / current_year['avg_price_per_m2']) - 1
-                                
-                                growth_rates.append({
-                                    'city_id': city,
-                                    'property_type': prop_type,
-                                    'year': current_year['year'],
-                                    'growth': growth
-                                })
-                
-                # Convertir en DataFrame pour l'agrégation
-                df_growth = pd.DataFrame(growth_rates)
-                
-                if not df_growth.empty:
-                    # Calculer la moyenne des taux de croissance par ville et type
-                    avg_growth = df_growth.groupby(['city_id', 'property_type'])['growth'].mean().reset_index()
+                # Process each city's price data
+                for city in response.data:
+                    city_id = city.get('city_id')
                     
-                    # Convertir en dictionnaire avec le format attendu
-                    for _, row in avg_growth.iterrows():
-                        city_id = row['city_id']
-                        property_type = row['property_type']
-                        growth_rate = row['growth']
+                    # Create growth rates for house prices
+                    if city.get('house_price_avg') is not None and city.get('house_price_avg') > 0:
+                        key = f"{city_id}_house"
+                        # Use default annual growth rate
+                        result[key] = self.DEFAULT_ANNUAL_GROWTH
+                    
+                    # Create growth rates for apartment prices
+                    if city.get('apartment_price_avg') is not None and city.get('apartment_price_avg') > 0:
+                        key = f"{city_id}_apartment"
+                        # Use default annual growth rate
+                        result[key] = self.DEFAULT_ANNUAL_GROWTH
                         
-                        # Plafonner le taux
-                        growth_rate = min(max(growth_rate, self.MIN_ANNUAL_GROWTH), self.MAX_ANNUAL_GROWTH)
-                        result[f"{city_id}_{property_type}"] = growth_rate
-                
+                self.logger.info(f"Retrieved price data for {len(result)} city/property type combinations")
                 return result
-                
+                    
         except Exception as e:
-            self.logger.error(f"Erreur lors de la récupération des taux d'évolution: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
+            self.logger.error(f"Error retrieving city price data: {str(e)}")
             return {}
-    
+        
     def calculate_confidence_score(self, property_data: pd.Series, age_years: float, has_dpe: bool) -> float:
         """
         Calcule un score de confiance pour l'estimation.

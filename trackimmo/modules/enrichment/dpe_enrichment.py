@@ -16,42 +16,42 @@ import math
 from .processor_base import ProcessorBase
 
 class DPEEnrichmentService(ProcessorBase):
-    """Processeur pour enrichir les propriétés avec les données DPE."""
+    """Processor for enriching properties with DPE data."""
     
-    # APIs ADEME avec les champs de recherche corrects
+    # ADEME APIs with correct search fields
     DPE_APIS = {
-        # DPE Logements existants (depuis juillet 2021)
+        # DPE Existing buildings (since July 2021)
         "EXISTING_BUILDINGS_NEW": {
             "url": "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines",
-            "field": "code_insee_ban",
+            "insee_field": "code_insee_ban",
             "zipcode_field": "code_postal_ban",
             "city_field": "nom_commune_ban"
         },
-        # DPE Logements neufs (depuis juillet 2021)
+        # DPE New buildings (since July 2021)
         "NEW_BUILDINGS_NEW": {
             "url": "https://data.ademe.fr/data-fair/api/v1/datasets/dpe02neuf/lines",
-            "field": "code_insee_ban",
+            "insee_field": "code_insee_ban",
             "zipcode_field": "code_postal_ban",
             "city_field": "nom_commune_ban"
         },
-        # DPE Tertiaire (depuis juillet 2021)
+        # DPE Tertiary buildings (since July 2021)
         "TERTIARY_NEW": {
             "url": "https://data.ademe.fr/data-fair/api/v1/datasets/dpe01tertiaire/lines",
-            "field": "code_insee_ban",
+            "insee_field": "code_insee_ban",
             "zipcode_field": "code_postal_ban",
             "city_field": "nom_commune_ban"
         },
-        # DPE Logements (avant juillet 2021)
+        # DPE Existing buildings (before July 2021)
         "EXISTING_BUILDINGS_OLD": {
             "url": "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-france/lines",
-            "field": "code_insee_commune_actualise",
+            "insee_field": "code_insee_commune_actualise",
             "zipcode_field": "code_postal",
             "city_field": "commune"
         },
-        # DPE tertiaire (avant juillet 2021)
+        # DPE Tertiary buildings (before July 2021)
         "TERTIARY_OLD": {
             "url": "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-tertiaire/lines",
-            "field": "code_insee_commune",
+            "insee_field": "code_insee_commune",
             "zipcode_field": "code_postal",
             "city_field": "commune"
         }
@@ -59,13 +59,15 @@ class DPEEnrichmentService(ProcessorBase):
     
     # Configuration
     MAX_RETRIES = 3
-    RETRY_DELAY = 1  # secondes
-    SIMILARITY_THRESHOLD = 0.7  # seuil pour le matching d'adresses
-    API_BATCH_SIZE = 200  # taille des lots pour l'API
-    DEBUG_SAMPLE_SIZE = 5  # nombre d'échantillons DPE à sauvegarder pour débogage
-    GEOCODING_API_URL = "https://api-adresse.data.gouv.fr/search/csv/"  # API de géocodage
+    RETRY_DELAY = 1  # seconds
+    SIMILARITY_THRESHOLD = 0.7  # threshold for text matching
+    HIGH_SIMILARITY_THRESHOLD = 0.85  # threshold for addresses without numbers
+    API_BATCH_SIZE = 9000  # batch size for API
+    DEBUG_SAMPLE_SIZE = 5  # number of DPE samples to save for debugging
+    PROXIMITY_THRESHOLD = 0.02  # 20 meters in km
+    STRICT_NUMBER_VALIDATION = True  # enable strict street number validation
     
-    # Mapping des champs DPE
+    # DPE field mapping
     DPE_FIELDS = {
         'N°DPE': 'dpe_number',
         'numero_dpe': 'dpe_number',
@@ -81,7 +83,7 @@ class DPEEnrichmentService(ProcessorBase):
         'annee_construction': 'construction_year'
     }
     
-    # Mapping des champs d'adresse
+    # Address field mapping
     ADDRESS_FIELDS = {
         'Adresse_brute': 'address_raw',
         'adresse_brut': 'address_raw',
@@ -89,21 +91,27 @@ class DPEEnrichmentService(ProcessorBase):
         'geo_adresse': 'address_raw'
     }
     
+    # Geopoint field mapping
+    GEOPOINT_FIELDS = [
+        '_geopoint', 'geo_point', 'geopoint', 
+        'coordinates_ban', 'coordonnees_ban'
+    ]
+    
     def __init__(self, input_path: str = None, output_path: str = None,
                  dpe_cache_dir: str = "data/cache/dpe"):
         super().__init__(input_path, output_path)
         self.dpe_cache_dir = dpe_cache_dir
         self.debug_dir = os.path.join(self.dpe_cache_dir, "debug")
         
-        # Créer les répertoires de cache et débogage si nécessaires
+        # Create cache and debug directories if needed
         os.makedirs(self.dpe_cache_dir, exist_ok=True)
         os.makedirs(self.debug_dir, exist_ok=True)
         
-        # Configurer le logger
+        # Configure logger
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.DEBUG)
         
-        # Éviter les doubles logs en vérifiant si un handler existe déjà
+        # Avoid duplicate logs by checking if a handler already exists
         if not self.logger.handlers:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.DEBUG)
@@ -111,527 +119,523 @@ class DPEEnrichmentService(ProcessorBase):
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
             
-        # Désactiver la propagation des logs pour éviter les doublons
+        # Disable log propagation to avoid duplicates
         self.logger.propagate = False
             
         self.logger.info("DPE Enrichment Service initialized")
     
     def process(self, **kwargs) -> bool:
         """
-        Enrichit les propriétés avec des données DPE.
+        Enrich properties with DPE data.
         
         Returns:
-            bool: True si le traitement a réussi, False sinon
+            bool: True if processing succeeded, False otherwise
         """
-        # Charger les données
+        # Load data
         df = self.load_csv()
         if df is None:
             return False
         
-        # Statistiques initiales
+        # Initial statistics
         initial_count = len(df)
-        self.logger.info(f"Début de l'enrichissement DPE avec {initial_count} propriétés")
+        self.logger.info(f"Starting DPE enrichment for {initial_count} properties")
         
         try:
-            # Réinitialisation de l'index pour éviter les problèmes avec les duplications
+            # Reset index to avoid problems with duplicates
             df = df.reset_index(drop=True)
             
-            # Préparer les colonnes DPE
+            # Prepare DPE columns
             standard_fields = set(self.DPE_FIELDS.values())
             for field in standard_fields:
                 df[field] = None
             
-            # Vérifier et préparer la colonne d'adresse
+            # Check and prepare address column
             if 'address_normalized' not in df.columns:
-                self.logger.info("Colonne 'address_normalized' non trouvée, utilisation de 'address' à la place")
+                self.logger.info("Column 'address_normalized' not found, using 'address' instead")
                 if 'address' in df.columns:
                     df['address_normalized'] = df['address']
                 else:
-                    self.logger.error("Aucune colonne d'adresse trouvée. Enrichissement impossible.")
+                    self.logger.error("No address column found. Enrichment impossible.")
                     return False
             
-            # Normaliser les adresses pour le matching
+            # Normalize addresses for matching
             df['address_matching'] = df['address_normalized'].apply(self.normalize_address_for_matching)
             
-            # Vérifier si nous avons un code INSEE, sinon extraire du code postal
+            # Extract address components with focus on street numbers
+            df['address_components'] = df['address_normalized'].apply(self.parse_address)
+            
+            # Check if we have INSEE code, otherwise extract from postal code
             if 'insee_code' not in df.columns:
-                self.logger.info("Colonne 'insee_code' non trouvée, extraction depuis 'postal_code'")
+                self.logger.info("Column 'insee_code' not found, extracting from 'postal_code'")
                 if 'postal_code' in df.columns:
-                    # On utilise les 2 premiers chiffres du code postal + les 3 premiers du code postal
-                    # C'est une approximation, pas idéale mais fonctionnelle pour le test
+                    # Use first 2 digits of postal code + 3 first of postal code
+                    # This is an approximation, not ideal but functional for testing
                     df['insee_code'] = df['postal_code'].astype(str).str[:5]
                 elif 'city' in df.columns and df['city'].str.contains(r'\d{5}', regex=True).any():
-                    # Essayer d'extraire le code postal du nom de la ville
+                    # Try to extract postal code from city name
                     df['insee_code'] = df['city'].str.extract(r'(\d{5})')[0]
                 else:
-                    self.logger.error("Impossible de déterminer le code INSEE. Enrichissement impossible.")
+                    self.logger.error("Cannot determine INSEE code. Enrichment impossible.")
                     return False
             
-            # Regrouper par code INSEE
-            insee_groups = df.groupby('insee_code')
+            # Group by INSEE code and postal code for more complete matching
+            location_groups = self.group_properties_by_location(df)
             
-            # Statistiques de matching
+            # Matching statistics
             total_matched = 0
             
-            # Liste pour collecter tous les candidats potentiels après matching textuel
-            all_potential_matches = []
-            property_info_by_candidate = {}
-            
-            # ÉTAPE 1: Identifier tous les candidats potentiels par matching textuel
-            self.logger.info("ÉTAPE 1: Matching textuel des adresses")
-            
-            # Limiter le nombre total de candidats pour éviter des problèmes de mémoire
-            max_total_candidates = 5000
-            
-            for insee_code, group in insee_groups:
-                if pd.isna(insee_code):
-                    self.logger.warning(f"Groupe avec code INSEE manquant ignoré ({len(group)} propriétés)")
+            # Process each location group
+            for location_id, group_info in location_groups.items():
+                if pd.isna(location_id):
+                    self.logger.warning(f"Group with missing location ID ignored ({len(group_info['dataframe'])} properties)")
                     continue
                     
-                self.logger.info(f"Traitement du groupe INSEE {insee_code} avec {len(group)} propriétés")
-                    
-                # Récupérer également le code postal et le nom de la commune pour le premier élément du groupe
-                zipcode = None
-                city_name = None
+                group = group_info['dataframe']
+                location_type = group_info['type']
                 
+                self.logger.info(f"Processing {location_type} group {location_id} with {len(group)} properties")
+                
+                # Get all relevant information for the location
+                location_info = {
+                    "insee_code": None,
+                    "postal_code": None,
+                    "city_name": None,
+                    "type": location_type
+                }
+                
+                # Extract location details from the first property in group
                 for _, row in group.head(1).iterrows():
-                    if 'postal_code' in row and not pd.isna(row['postal_code']):
-                        zipcode = row['postal_code']
-                    elif 'city' in row and re.search(r'\d{5}', row['city']):
-                        # Extraire le code postal du nom de la ville
-                        match = re.search(r'(\d{5})', row['city'])
-                        zipcode = match.group(1) if match else None
+                    if location_type == 'insee':
+                        location_info["insee_code"] = location_id
+                        if 'postal_code' in row and not pd.isna(row['postal_code']):
+                            location_info["postal_code"] = row['postal_code']
+                    else:  # postal_code
+                        location_info["postal_code"] = location_id
+                        if 'insee_code' in row and not pd.isna(row['insee_code']):
+                            location_info["insee_code"] = row['insee_code']
                     
                     if 'city' in row and not pd.isna(row['city']):
-                        # Nettoyer le nom de la ville (enlever le code postal)
-                        city_name = re.sub(r'\d{5}', '', row['city']).strip()
+                        # Clean city name (remove postal code)
+                        location_info["city_name"] = re.sub(r'\d{5}', '', row['city']).strip()
                 
-                # Vérifier le cache des DPEs
-                cache_file = os.path.join(self.dpe_cache_dir, f"dpe_{insee_code}.csv")
-                
-                if os.path.exists(cache_file):
-                    # Vérifier l'âge du fichier
-                    file_age = time.time() - os.path.getmtime(cache_file)
-                    # Si le fichier a plus de 30 jours (2592000 secondes)
-                    if file_age > 2592000:
-                        self.logger.info(f"Cache DPE pour INSEE {insee_code} obsolète, mise à jour...")
-                        dpe_data = self.fetch_dpe_data(insee_code, zipcode, city_name)
-                        if dpe_data is not None and not dpe_data.empty:
-                            dpe_data.to_csv(cache_file, index=False)
-                    else:
-                        # Charger depuis le cache
-                        dpe_data = pd.read_csv(cache_file, low_memory=False)
-                        # Nettoyer les données avant utilisation
-                        dpe_data = self.sanitize_cache_data(dpe_data)
-                        self.logger.info(f"Chargé {len(dpe_data)} DPEs depuis le cache pour INSEE {insee_code}")
-                else:
-                    # Récupérer les données DPE pour cette commune
-                    dpe_data = self.fetch_dpe_data(insee_code, zipcode, city_name)
-                    
-                    if dpe_data is not None and not dpe_data.empty:
-                        # Sauvegarder dans le cache
-                        dpe_data.to_csv(cache_file, index=False)
+                # Get DPE data for this location (using cache if available)
+                dpe_data = self.get_cached_or_fetch_dpe_data(location_id, location_info)
                 
                 if dpe_data is None or dpe_data.empty:
-                    self.logger.warning(f"Aucun DPE trouvé pour INSEE {insee_code}")
+                    self.logger.warning(f"No DPE data found for {location_type}: {location_id}")
                     continue
                 
-                # Sauvegarder quelques échantillons pour débogage
-                self.save_sample_dpe(insee_code, dpe_data)
+                # Save sample DPEs for debugging
+                self.save_sample_dpe(location_id, dpe_data)
                 
-                # Préparer les données DPE pour le matching
-                self.logger.info(f"Préparation des données DPE pour le matching: INSEE {insee_code}")
-                if 'Adresse_brute' in dpe_data.columns:
-                    # Assurer que l'index est unique pour éviter les erreurs de reindex
-                    dpe_data = dpe_data.reset_index(drop=True)
-                    
-                    # Traiter les valeurs NaN ou NaT
-                    dpe_data['Adresse_brute'] = dpe_data['Adresse_brute'].fillna('').astype(str)
-                    
-                    # Vérifier les colonnes dupliquées à nouveau pour être sûr
-                    if dpe_data.columns.duplicated().any():
-                        self.logger.warning("Suppression de colonnes dupliquées avant le matching d'adresse")
-                        dpe_data = dpe_data.loc[:, ~dpe_data.columns.duplicated()]
-                    
-                    # Appliquer la normalisation - méthode sécurisée
-                    self.logger.info(f"Normalisation des adresses DPE pour INSEE {insee_code}")
-                    address_matching = []
-                    for adr in dpe_data['Adresse_brute']:
-                        address_matching.append(self.normalize_address_for_matching(adr))
-                    dpe_data['address_matching'] = address_matching
-                else:
-                    self.logger.warning(f"Colonne Adresse_brute manquante dans les données DPE pour INSEE {insee_code}")
-                    # Essayer de trouver une autre colonne d'adresse
-                    address_cols = [col for col in dpe_data.columns if 'adresse' in col.lower() or 'address' in col.lower()]
-                    if address_cols:
-                        self.logger.info(f"Utilisation de la colonne {address_cols[0]} pour le matching d'adresse")
-                        dpe_data = dpe_data.reset_index(drop=True)
-                        dpe_data['Adresse_brute'] = dpe_data[address_cols[0]].fillna('').astype(str)
-                        
-                        # Appliquer la normalisation - méthode sécurisée
-                        self.logger.info(f"Normalisation des adresses DPE pour INSEE {insee_code}")
-                        address_matching = []
-                        for adr in dpe_data['Adresse_brute']:
-                            address_matching.append(self.normalize_address_for_matching(adr))
-                        dpe_data['address_matching'] = address_matching
-                    else:
-                        self.logger.warning(f"Aucune colonne d'adresse trouvée, matching impossible pour INSEE {insee_code}")
-                        continue
+                # Prepare DPE data for matching
+                self.logger.info(f"Preparing DPE data for matching: {location_type} {location_id}")
+                dpe_data = self.prepare_dpe_data_for_matching(dpe_data)
                 
-                # Pour chaque propriété du groupe, chercher des DPE potentiels par matching textuel
+                if dpe_data is None or dpe_data.empty:
+                    self.logger.warning(f"Failed to prepare DPE data for {location_type}: {location_id}")
+                    continue
+                
+                # Find matches for each property
                 properties_count = len(group)
-                self.logger.info(f"Recherche de candidats DPE pour {properties_count} propriétés (INSEE {insee_code})")
+                self.logger.info(f"Looking for DPE matches for {properties_count} properties ({location_type}: {location_id})")
                 
                 processed_properties = 0
-                properties_with_candidates = 0
+                properties_with_matches = 0
                 
                 for idx, row in group.iterrows():
                     processed_properties += 1
                     if processed_properties % 50 == 0:
-                        self.logger.info(f"Traité {processed_properties}/{properties_count} propriétés pour INSEE {insee_code}")
+                        self.logger.info(f"Processed {processed_properties}/{properties_count} properties for {location_type}: {location_id}")
                     
-                    property_address = row['address_matching']
-                    
-                    # Vérifier les coordonnées
+                    # Check coordinates
                     lat = row.get('latitude', None)
                     lon = row.get('longitude', None)
                     
                     if pd.isna(lat) or pd.isna(lon):
-                        # Ignorer les propriétés sans coordonnées
+                        # Skip properties without coordinates
                         continue
                     
-                    # Trouver les candidats DPE potentiels par similarité de texte
-                    candidates = self.find_text_match_candidates(property_address, dpe_data)
+                    # Get address components
+                    property_address = row['address_matching']
+                    property_components = row['address_components']
                     
-                    # Si on a des candidats, les ajouter à la liste à géocoder
-                    if candidates:
-                        properties_with_candidates += 1
+                    # Find potential DPE matches by text similarity
+                    candidates = self.find_text_match_candidates(property_address, property_components, dpe_data)
+                    
+                    if not candidates:
+                        continue
+                    
+                    properties_with_matches += 1
+                    self.logger.debug(f"Found {len(candidates)} potential matches for property: {property_address}")
+                    
+                    # Validate matches by geographic proximity
+                    validated_match = self.find_best_geo_match(lat, lon, candidates)
+                    
+                    if validated_match:
+                        # Calculate match confidence
+                        match_data = {
+                            "property_address": property_address,
+                            "property_components": property_components,
+                            "dpe_address": validated_match.get('Adresse_brute', ''),
+                            "dpe_components": self.parse_address(validated_match.get('Adresse_brute', '')),
+                            "distance_m": validated_match['distance_m'],
+                            "similarity": validated_match['similarity']
+                        }
+                        confidence = self.calculate_match_confidence(match_data)
                         
-                        for candidate in candidates:
-                            # Créer un identifiant unique pour ce candidat
-                            candidate_id = f"{idx}_{len(all_potential_matches)}"
-                            
-                            # Ajouter les coordonnées de la propriété et l'ID pour retrouver la propriété plus tard
-                            candidate['property_idx'] = idx
-                            candidate['property_lat'] = lat
-                            candidate['property_lon'] = lon
-                            candidate['candidate_id'] = candidate_id
-                            
-                            # Ajouter le candidat à la liste
-                            all_potential_matches.append(candidate)
-                            property_info_by_candidate[candidate_id] = {
-                                'property_idx': idx,
-                                'property_address': property_address
-                            }
-                    
-                    # Si on a déjà trop de candidats, arrêter la recherche
-                    if len(all_potential_matches) >= max_total_candidates:
-                        self.logger.warning(f"Limite de {max_total_candidates} candidats atteinte, arrêt de la recherche")
-                        break
+                        # Update property with DPE data
+                        for std_field in standard_fields:
+                            if std_field in validated_match and not pd.isna(validated_match[std_field]):
+                                value = validated_match[std_field]
+                                # Convert construction year
+                                if std_field == 'construction_year' and value:
+                                    try:
+                                        value = int(value)
+                                    except (ValueError, TypeError):
+                                        value = None
+                                df.loc[idx, std_field] = value
+                        
+                        # Add confidence score
+                        df.loc[idx, 'dpe_match_confidence'] = confidence
+                        
+                        total_matched += 1
+                        
+                        # Log information about match
+                        if total_matched % 10 == 0 or total_matched < 10:
+                            self.logger.info(
+                                f"Match found: '{property_address}' -> '{validated_match.get('Adresse_brute', '')}' "
+                                f"(distance: {validated_match['distance_m']:.1f}m, confidence: {confidence})"
+                            )
                 
-                self.logger.info(f"Trouvé des candidats pour {properties_with_candidates}/{properties_count} propriétés pour INSEE {insee_code}")
-                
-                # Si on a déjà trop de candidats, arrêter la recherche
-                if len(all_potential_matches) >= max_total_candidates:
-                    break
+                self.logger.info(f"Found matches for {properties_with_matches}/{properties_count} properties for {location_type}: {location_id}")
             
-            self.logger.info(f"Trouvé {len(all_potential_matches)} candidats potentiels au total après matching textuel")
-            
-            if not all_potential_matches:
-                self.logger.warning("Aucun candidat DPE trouvé par matching textuel")
-                return self.save_csv(df)
-            
-            # ÉTAPE 2: Géocoder tous les candidats DPE en une seule requête
-            self.logger.info("ÉTAPE 2: Géocodage des candidats DPE")
-            geocoded_dpe_matches = []
-            
-            # Taille des lots pour l'API de géocodage
-            geocoding_batch_size = 1000
-            
-            # Diviser les candidats en lots pour le géocodage
-            candidate_batches = [all_potential_matches[i:i+geocoding_batch_size] 
-                                for i in range(0, len(all_potential_matches), geocoding_batch_size)]
-            
-            self.logger.info(f"Traitement en {len(candidate_batches)} lots de géocodage")
-            
-            for batch_idx, candidate_batch in enumerate(candidate_batches):
-                self.logger.info(f"Géocodage du lot {batch_idx+1}/{len(candidate_batches)} ({len(candidate_batch)} candidats)")
-                
-                # Géocoder ce lot de candidats
-                batch_results = self.geocode_dpe_candidates(candidate_batch)
-                
-                if batch_results:
-                    geocoded_dpe_matches.extend(batch_results)
-                    self.logger.info(f"Lot {batch_idx+1}: {len(batch_results)} candidats géocodés avec succès")
-                else:
-                    self.logger.warning(f"Lot {batch_idx+1}: Échec du géocodage")
-                    
-                # Faire une pause entre les lots pour éviter de surcharger l'API
-                if batch_idx < len(candidate_batches) - 1:
-                    time.sleep(1)
-                
-            self.logger.info(f"Géocodage terminé: {len(geocoded_dpe_matches)}/{len(all_potential_matches)} candidats géocodés avec succès")
-            
-            if not geocoded_dpe_matches:
-                self.logger.warning("Aucun candidat DPE géocodé avec succès")
-                return self.save_csv(df)
-            
-            # ÉTAPE 3: Valider les matches par proximité géographique et appliquer aux propriétés
-            self.logger.info(f"ÉTAPE 3: Validation et application des matches ({len(geocoded_dpe_matches)} candidats géocodés)")
-            
-            validated_count = 0
-            
-            for dpe_match in geocoded_dpe_matches:
-                candidate_id = dpe_match.get('candidate_id')
-                
-                if not candidate_id or candidate_id not in property_info_by_candidate:
-                    continue
-                    
-                property_idx = dpe_match.get('property_idx')
-                property_lat = dpe_match.get('property_lat')
-                property_lon = dpe_match.get('property_lon')
-                property_address = property_info_by_candidate[candidate_id]['property_address']
-                
-                # Valider la distance entre la propriété et l'adresse DPE
-                dpe_lat = dpe_match.get('geocoded_latitude')
-                dpe_lon = dpe_match.get('geocoded_longitude')
-                
-                if pd.isna(dpe_lat) or pd.isna(dpe_lon) or pd.isna(property_lat) or pd.isna(property_lon):
-                    continue
-                
-                distance = self.calculate_geo_distance(property_lat, property_lon, dpe_lat, dpe_lon)
-                
-                # Valider si la distance est inférieure à 100m
-                if distance <= 0.1:  # 100m en km
-                    # Match validé, mettre à jour les données DPE pour cette propriété
-                    for std_field in standard_fields:
-                        if std_field in dpe_match and not pd.isna(dpe_match[std_field]):
-                            value = dpe_match[std_field]
-                            # Conversion pour année de construction
-                            if std_field == 'construction_year' and value:
-                                try:
-                                    value = int(value)
-                                except (ValueError, TypeError):
-                                    value = None
-                            df.loc[property_idx, std_field] = value
-                    
-                    total_matched += 1
-                    validated_count += 1
-                    
-                    # Afficher des informations sur les matches trouvés
-                    if total_matched % 10 == 0 or total_matched < 10:
-                        self.logger.info(f"Match trouvé: '{property_address}' -> '{dpe_match.get('Adresse_brute', '')}' (distance: {distance*1000:.1f}m)")
-            
-            self.logger.info(f"Validé {validated_count}/{len(geocoded_dpe_matches)} matches par proximité géographique")
-            
-            # Supprimer les colonnes temporaires
+            # Remove temporary columns
             if 'address_matching' in df.columns:
                 df = df.drop(columns=['address_matching'])
+            if 'address_components' in df.columns:
+                df = df.drop(columns=['address_components'])
             
-            # Convertir construction_year en entier
+            # Convert construction_year to integer
             df['construction_year'] = pd.to_numeric(df['construction_year'], errors='coerce')
             
-            # Statistiques finales
+            # Final statistics
             match_percentage = (total_matched / initial_count) * 100 if initial_count > 0 else 0
-            self.logger.info(f"Enrichissement DPE terminé: {total_matched}/{initial_count} propriétés enrichies ({match_percentage:.1f}%)")
+            self.logger.info(f"DPE enrichment completed: {total_matched}/{initial_count} properties enriched ({match_percentage:.1f}%)")
             
-            # Sauvegarder le résultat
+            # Save result
             return self.save_csv(df)
             
         except Exception as e:
-            self.logger.error(f"Erreur lors de l'enrichissement DPE: {str(e)}")
+            self.logger.error(f"Error during DPE enrichment: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
             return False
     
-    def fetch_dpe_data(self, insee_code: str, zipcode: Optional[str] = None, city_name: Optional[str] = None) -> Optional[pd.DataFrame]:
+    def group_properties_by_location(self, df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         """
-        Récupère les données DPE pour un code INSEE, code postal et nom de ville.
+        Group properties by INSEE code and postal code for more complete matching.
         
         Args:
-            insee_code: Code INSEE de la commune
-            zipcode: Code postal de la commune
-            city_name: Nom de la commune
+            df: DataFrame with properties
             
         Returns:
-            Optional[pd.DataFrame]: DataFrame avec les données DPE ou None si échec
+            Dict mapping location IDs to groups
+        """
+        location_groups = {}
+        
+        # First try to group by INSEE code (preferred)
+        if 'insee_code' in df.columns:
+            insee_groups = df.groupby('insee_code')
+            for insee_code, group in insee_groups:
+                if pd.isna(insee_code) or not insee_code:
+                    continue
+                location_groups[str(insee_code)] = {
+                    'dataframe': group,
+                    'type': 'insee'
+                }
+        
+        # Then try to group by postal code for properties without INSEE code
+        if 'postal_code' in df.columns:
+            # Get properties not already grouped by INSEE
+            if 'insee_code' in df.columns:
+                ungrouped = df[df['insee_code'].isna() | (df['insee_code'] == '')]
+            else:
+                ungrouped = df
+                
+            postal_groups = ungrouped.groupby('postal_code')
+            for postal_code, group in postal_groups:
+                if pd.isna(postal_code) or not postal_code:
+                    continue
+                # Only add if not already grouped by INSEE
+                if str(postal_code) not in location_groups:
+                    location_groups[str(postal_code)] = {
+                        'dataframe': group,
+                        'type': 'postal'
+                    }
+        
+        return location_groups
+    
+    def get_cached_or_fetch_dpe_data(self, location_id: str, location_info: Dict[str, Any]) -> Optional[pd.DataFrame]:
+        """
+        Get DPE data from cache or fetch from API.
+        
+        Args:
+            location_id: Location ID (INSEE code or postal code)
+            location_info: Dict with location information
+            
+        Returns:
+            DataFrame with DPE data or None if not found
+        """
+        # Check cache
+        cache_file = os.path.join(self.dpe_cache_dir, f"dpe_{location_id}.csv")
+        
+        if os.path.exists(cache_file):
+            # Check file age
+            file_age = time.time() - os.path.getmtime(cache_file)
+            # If file is older than 30 days (2592000 seconds)
+            if file_age > 2592000:
+                self.logger.info(f"DPE cache for {location_id} is outdated, updating...")
+                dpe_data = self.fetch_dpe_data(location_info)
+                if dpe_data is not None and not dpe_data.empty:
+                    dpe_data.to_csv(cache_file, index=False)
+            else:
+                # Load from cache
+                dpe_data = pd.read_csv(cache_file, low_memory=False)
+                # Clean data before use
+                dpe_data = self.sanitize_cache_data(dpe_data)
+                self.logger.info(f"Loaded {len(dpe_data)} DPEs from cache for {location_id}")
+        else:
+            # Fetch DPE data for this location
+            dpe_data = self.fetch_dpe_data(location_info)
+            
+            if dpe_data is not None and not dpe_data.empty:
+                # Save to cache
+                dpe_data.to_csv(cache_file, index=False)
+        
+        return dpe_data
+    
+    def fetch_dpe_data(self, location_info: Dict[str, Any]) -> Optional[pd.DataFrame]:
+        """
+        Fetch DPE data from all APIs using multiple lookup methods.
+        
+        Args:
+            location_info: Dict with location details
+            
+        Returns:
+            DataFrame with DPE data or None if not found
         """
         all_data = []
         
-        # Parcourir les APIs par priorité (les plus récentes d'abord)
+        # API priority (newest first)
         api_priority = [
-            "EXISTING_BUILDINGS_NEW",  # Logements existants (depuis juillet 2021)
-            "NEW_BUILDINGS_NEW",       # Logements neufs (depuis juillet 2021)
-            "EXISTING_BUILDINGS_OLD",  # Logements (avant juillet 2021)
-            "TERTIARY_NEW",            # Tertiaire (depuis juillet 2021)
-            "TERTIARY_OLD"             # Tertiaire (avant juillet 2021)
+            "EXISTING_BUILDINGS_NEW",  # Existing buildings (since July 2021)
+            "NEW_BUILDINGS_NEW",       # New buildings (since July 2021)
+            "EXISTING_BUILDINGS_OLD",  # Existing buildings (before July 2021)
+            "TERTIARY_NEW",            # Tertiary buildings (since July 2021)
+            "TERTIARY_OLD"             # Tertiary buildings (before July 2021)
         ]
         
-        # Nombre minimum de DPE que nous voulons obtenir avant d'arrêter
+        # Minimum DPEs we want before stopping
         min_dpe_threshold = 200
         
-        # Requêtes pour les API par ordre de priorité
+        # Query strategies in order of priority
+        query_strategies = []
+        
+        # Strategy 1: INSEE code (if available)
+        if location_info.get('insee_code'):
+            query_strategies.append({
+                'field_type': 'insee',
+                'value': location_info['insee_code'],
+                'description': 'INSEE Code'
+            })
+        
+        # Strategy 2: Postal code (if available)
+        if location_info.get('postal_code'):
+            query_strategies.append({
+                'field_type': 'zipcode',
+                'value': location_info['postal_code'],
+                'description': 'Postal Code'
+            })
+        
+        # Strategy 3: City name + postal code (if both available)
+        if location_info.get('city_name') and location_info.get('postal_code'):
+            query_strategies.append({
+                'field_type': 'city',
+                'value': location_info['city_name'],
+                'postal_code': location_info['postal_code'],
+                'description': 'City Name'
+            })
+        
+        # Try each API with each strategy
         for api_name in api_priority:
-            # Vérifier si nous avons déjà suffisamment de données
+            # Check if we have enough data already
             if len(all_data) > min_dpe_threshold:
-                self.logger.info(f"Déjà {len(all_data)} DPEs, suffisant pour l'enrichissement. Arrêt des requêtes.")
+                self.logger.info(f"Already have {len(all_data)} DPEs, sufficient for enrichment. Stopping queries.")
                 break
                 
             api_info = self.DPE_APIS[api_name]
             
-            # Récupérer avec code INSEE uniquement (pas besoin de q_fields car les codes INSEE sont uniques)
-            insee_data = self.query_dpe_api_with_pagination(
-                insee_code, 
-                api_info["url"], 
-                api_info["field"], 
-                "Code INSEE"
-            )
-            if insee_data:
-                all_data.extend(insee_data)
-                self.logger.info(f"Récupéré {len(insee_data)} DPEs via {api_name} avec INSEE {insee_code}")
-                
-                # Si nous avons suffisamment de données, on peut s'arrêter là
+            for strategy in query_strategies:
+                # Skip if we already have enough data
                 if len(all_data) > min_dpe_threshold:
                     break
+                
+                field_type = strategy['field_type']
+                search_value = strategy['value']
+                
+                # Determine the right field to search in
+                if field_type == 'insee':
+                    search_field = api_info['insee_field']
+                elif field_type == 'zipcode':
+                    search_field = api_info['zipcode_field']
+                elif field_type == 'city':
+                    search_field = api_info['city_field']
+                    # For city search, we also filter by postal code
+                    postal_filter = strategy.get('postal_code')
+                else:
+                    continue  # Skip unknown field types
+                
+                # Query the API
+                results = self.query_dpe_api_with_pagination(
+                    search_value, 
+                    api_info["url"], 
+                    search_field,
+                    strategy["description"],
+                    extra_filters={api_info['zipcode_field']: postal_filter} if field_type == 'city' and 'postal_code' in strategy else None
+                )
+                
+                if results:
+                    self.logger.info(f"Found {len(results)} DPEs via {api_name} with {strategy['description']}: {search_value}")
+                    all_data.extend(results)
         
-        # Dédupliquer les DPEs
+        # Process the collected data
         if all_data:
-            # Convertir en DataFrame
+            # Convert to DataFrame
             df = pd.DataFrame(all_data)
             
-            # Reset de l'index pour éviter les problèmes de duplications
+            # Reset index to avoid duplication problems
             df = df.reset_index(drop=True)
             
-            # Vérifier et traiter les colonnes dupliquées
+            # Check for and handle duplicate columns
             if df.columns.duplicated().any():
-                self.logger.warning("Détection de colonnes dupliquées dans les données DPE")
-                # Garder uniquement la première occurrence de chaque colonne dupliquée
+                self.logger.warning("Detected duplicate columns in DPE data")
+                # Keep only the first occurrence of each duplicate column
                 df = df.loc[:, ~df.columns.duplicated()]
             
-            # Standardiser les noms de colonnes pour l'adresse
+            # Standardize field names
             for api_field, std_field in self.ADDRESS_FIELDS.items():
                 if api_field in df.columns:
                     df.rename(columns={api_field: std_field}, inplace=True)
             
-            # Standardiser les noms de colonnes pour les données DPE
             for api_field, std_field in self.DPE_FIELDS.items():
                 if api_field in df.columns:
                     df.rename(columns={api_field: std_field}, inplace=True)
             
-            # Dédupliquer sur le numéro DPE
+            # Rename or create a standard address column
+            if 'address_raw' in df.columns:
+                df.rename(columns={'address_raw': 'Adresse_brute'}, inplace=True)
+            elif not 'Adresse_brute' in df.columns:
+                # Find an alternative address column
+                address_cols = [col for col in df.columns if 'adresse' in col.lower() or 'address' in col.lower()]
+                if address_cols:
+                    df.rename(columns={address_cols[0]: 'Adresse_brute'}, inplace=True)
+                else:
+                    # Create an address from components
+                    components = []
+                    for field in ['numero_voie_ban', 'nom_rue_ban', 'code_postal_ban', 'nom_commune_ban']:
+                        if field in df.columns:
+                            components.append(field)
+                    
+                    if components:
+                        df['Adresse_brute'] = df[components].astype(str).apply(lambda x: ' '.join(x.dropna()), axis=1)
+                    else:
+                        df['Adresse_brute'] = 'Address not available'
+            
+            # Find geopoint column if available
+            for geopoint_field in self.GEOPOINT_FIELDS:
+                if geopoint_field in df.columns:
+                    df.rename(columns={geopoint_field: '_geopoint'}, inplace=True)
+                    break
+            
+            # Deduplicate on DPE number if available
             if 'dpe_number' in df.columns:
                 df = df.drop_duplicates(subset=['dpe_number'])
-                self.logger.info(f"Total après déduplication: {len(df)} DPEs pour INSEE {insee_code}")
-                
-                # Renommer la colonne d'adresse brute pour la cohérence
-                if 'address_raw' in df.columns:
-                    df.rename(columns={'address_raw': 'Adresse_brute'}, inplace=True)
-                    
-                # Assurer que nous avons une colonne pour l'adresse brute
-                if 'Adresse_brute' not in df.columns:
-                    # Chercher une colonne alternative d'adresse
-                    address_cols = [col for col in df.columns if 'adresse' in col.lower() or 'address' in col.lower()]
-                    if address_cols:
-                        df['Adresse_brute'] = df[address_cols[0]]
-                    else:
-                        # Créer une adresse brute à partir de ce qu'on a
-                        components = []
-                        for field in ['numero_voie_ban', 'nom_rue_ban', 'code_postal_ban', 'nom_commune_ban']:
-                            if field in df.columns:
-                                components.append(field)
-                        
-                        if components:
-                            df['Adresse_brute'] = df[components].astype(str).apply(lambda x: ' '.join(x.dropna()), axis=1)
-                        else:
-                            df['Adresse_brute'] = 'Adresse non disponible'
-                            
-                # Limiter à 10000 résultats max pour éviter des problèmes de mémoire et de performance
-                if len(df) > 10000:
-                    self.logger.warning(f"Trop de résultats pour INSEE {insee_code}, limitation à 10000 résultats")
-                    df = df.head(10000)
-                
-                # Reset de l'index à nouveau après toutes les transformations
-                return df.reset_index(drop=True)
-            else:
-                self.logger.warning(f"Aucune colonne dpe_number dans les données récupérées")
-                # Renommer la colonne d'adresse brute pour la cohérence
-                if 'address_raw' in df.columns:
-                    df.rename(columns={'address_raw': 'Adresse_brute'}, inplace=True)
-                    
-                # Limiter à 10000 résultats max pour éviter des problèmes de mémoire et de performance
-                if len(df) > 10000:
-                    self.logger.warning(f"Trop de résultats pour INSEE {insee_code}, limitation à 10000 résultats")
-                    df = df.head(10000)
-                
-                # Reset de l'index à nouveau après toutes les transformations
-                return df.reset_index(drop=True)
+                self.logger.info(f"Total after deduplication: {len(df)} DPEs")
+            
+            # Limit to 10000 results max to avoid memory issues
+            if len(df) > 10000:
+                self.logger.warning(f"Too many results, limiting to 10000")
+                df = df.head(10000)
+            
+            # Reset index again after all transformations
+            return df.reset_index(drop=True)
         else:
-            self.logger.warning(f"Aucun DPE trouvé pour INSEE {insee_code}, zipcode {zipcode}, ville {city_name}")
+            self.logger.warning(f"No DPE data found")
             return None
     
-    def normalize_city_name(self, city_name: str) -> str:
-        """Normalise le nom d'une ville pour la comparaison."""
-        if not isinstance(city_name, str):
-            return ""
-        city = city_name.upper()
-        city = unicodedata.normalize('NFKD', city).encode('ASCII', 'ignore').decode('utf-8')
-        city = re.sub(r'[^\w\s]', '', city)
-        city = re.sub(r'\s+', ' ', city).strip()
-        return city
-    
     def query_dpe_api_with_pagination(self, search_value: str, api_url: str, 
-                                     search_field: str, search_label: str) -> Optional[List[Dict[str, Any]]]:
+                                     search_field: str, search_label: str,
+                                     extra_filters: Dict[str, str] = None) -> Optional[List[Dict[str, Any]]]:
         """
-        Interroge l'API DPE avec pagination pour gérer les limites de 9999 résultats.
+        Query DPE API with pagination to handle 9999 result limit.
         
         Args:
-            search_value: Valeur à rechercher
-            api_url: URL de l'API à interroger
-            search_field: Champ dans lequel rechercher
-            search_label: Libellé du champ pour les logs
+            search_value: Value to search for
+            api_url: API URL
+            search_field: Field to search in
+            search_label: Label for the field (for logging)
+            extra_filters: Additional filters to apply
             
         Returns:
-            Optional[List[Dict[str, Any]]]: Liste des DPEs ou None si échec
+            List of DPEs or None if failed
         """
         all_results = []
-        page = 1  # Commencer à 1 pour compatibilité avec l'API
+        page = 1
         has_more = True
         
-        # L'API a une limitation: size * page <= 10000
-        # Pour les premières pages, on peut utiliser une taille de lot plus grande
-        # Ensuite, on doit réduire la taille pour les pages suivantes
+        # API limitation: size * page <= 10000
+        # For first pages, we can use larger batch size
+        # For later pages, we need to reduce the size
         max_page_size = self.API_BATCH_SIZE
         
         while has_more:
             try:
-                # Ajuster la taille du lot pour respecter la limite size*page <= 10000
+                # Adjust batch size to respect the limit
                 if page * max_page_size > 10000:
-                    # Calculer la taille maximale possible pour cette page
-                    current_page_size = min(max_page_size, 10000 // page)
-                    if current_page_size <= 0:
-                        self.logger.warning(f"Limite de pagination atteinte (10000) pour {search_label} {search_value}")
+                    # Calculate maximum possible size for this page
+                    if max_page_size <= 0:
+                        self.logger.warning(f"Pagination limit reached (10000) for {search_label} {search_value}")
                         break
                 else:
                     current_page_size = max_page_size
                 
-                # Utiliser uniquement le code INSEE comme paramètre de recherche sans q_fields
-                # car les codes INSEE sont uniques
+                # Build query parameters
                 params = {
                     "size": current_page_size,
                     "page": page,
-                    "q": search_value
+                    "q": search_value,
+                    "q_fields": search_field
                 }
                 
-                self.logger.info(f"Interrogation de l'API pour {search_label} {search_value} (page {page}, taille {current_page_size})")
+                # Add any extra filters
+                if extra_filters:
+                    for field, value in extra_filters.items():
+                        if value:
+                            # This is a hack but it works for the ADEME API - add an additional search filter
+                            params["q"] = f"{params['q']} {value}"
+                            params["q_fields"] = f"{params['q_fields']},{field}"
                 
-                # Essayer plusieurs fois en cas d'erreur temporaire
+                self.logger.info(f"Querying API for {search_label} {search_value} (page {page}, size {current_page_size})")
+                
+                # Try multiple times in case of temporary error
                 for retry in range(self.MAX_RETRIES):
                     try:
                         response = requests.get(api_url, params=params, timeout=60)
                         break
                     except requests.exceptions.RequestException as e:
                         if retry < self.MAX_RETRIES - 1:
-                            self.logger.warning(f"Erreur temporaire lors de la requête API: {str(e)}. Réessai {retry+1}/{self.MAX_RETRIES}")
+                            self.logger.warning(f"Temporary error during API request: {str(e)}. Retry {retry+1}/{self.MAX_RETRIES}")
                             time.sleep(self.RETRY_DELAY * (retry + 1))
                         else:
                             raise
@@ -643,505 +647,526 @@ class DPEEnrichmentService(ProcessorBase):
                         results = data["results"]
                         all_results.extend(results)
                         
-                        # Vérifier le nombre total et s'il y a plus de données
+                        # Check total and if there's more data
                         total_results = data.get("total", 0)
                         
-                        self.logger.info(f"Reçu {len(results)} résultats. Total annoncé: {total_results}")
+                        self.logger.info(f"Received {len(results)} results. Total reported: {total_results}")
                         
                         if total_results >= 9999:
-                            # Si le total est de 9999 ou plus, il y a probablement plus de données (limitation API)
+                            # If total is 9999 or more, there's probably more data (API limitation)
                             has_more = len(results) == current_page_size
-                            self.logger.warning(f"Limite de 9999 résultats atteinte pour {search_label} {search_value}, "
-                                              f"page {page} avec {len(results)} résultats. Continuant pagination...")
+                            self.logger.warning(f"9999 result limit reached for {search_label} {search_value}, "
+                                              f"page {page} with {len(results)} results. Continuing pagination...")
                         else:
-                            # Sinon, il reste des pages si le nombre total de résultats n'a pas été atteint
-                            received_so_far = sum(1 for _ in all_results)
+                            # Otherwise, continue until we've fetched all results
+                            received_so_far = len(all_results)
                             has_more = received_so_far < total_results
                             if has_more:
-                                self.logger.info(f"Total: {total_results}, reçus: {received_so_far}, reste: {has_more}")
+                                self.logger.info(f"Total: {total_results}, received: {received_so_far}, more: {has_more}")
                     else:
                         has_more = False
                 else:
-                    self.logger.warning(f"Erreur API ({response.status_code}) pour {search_label} {search_value}")
-                    self.logger.warning(f"Réponse: {response.text}")
+                    self.logger.warning(f"API error ({response.status_code}) for {search_label} {search_value}")
+                    self.logger.warning(f"Response: {response.text}")
                     has_more = False
                 
-                # Passer à la page suivante
+                # Next page
                 page += 1
                 
-                # Pause pour éviter de surcharger l'API
+                # Pause to avoid overloading the API
                 time.sleep(0.5)
                 
-                # Limite de sécurité: pas plus de 10 pages ou 20000 résultats
-                if page > 20 or len(all_results) >= 20000:
-                    self.logger.warning(f"Limite de pagination atteinte pour {search_label} {search_value}, arrêt.")
+                # Safety limit: no more than 15 pages or 20000 results
+                if page > 15 or len(all_results) >= 20000:
+                    self.logger.warning(f"Pagination limit reached for {search_label} {search_value}, stopping.")
                     has_more = False
                 
             except Exception as e:
-                self.logger.warning(f"Erreur lors de l'interrogation de l'API DPE: {str(e)}")
+                self.logger.warning(f"Error querying DPE API: {str(e)}")
                 has_more = False
         
         return all_results
     
-    def normalize_address_for_matching(self, address: str) -> str:
+    def parse_address(self, address: str) -> Dict[str, Any]:
         """
-        Normalise une adresse pour le matching DPE.
+        Parse an address into components with focus on street number.
         
         Args:
-            address: Adresse à normaliser
+            address: Raw address string
             
         Returns:
-            str: Adresse normalisée
+            Dict with parsed components
+        """
+        if not isinstance(address, str) or not address or address.lower() == 'nan':
+            return {"number": None, "street": "", "city": ""}
+        
+        # Basic normalization
+        address = address.upper()
+        address = unicodedata.normalize('NFKD', address).encode('ASCII', 'ignore').decode('utf-8')
+        
+        # Extract street number - multiple patterns
+        number_match = re.search(r'^(\d+\s*[A-Z]?)[\s,]', address)
+        number = number_match.group(1).strip() if number_match else None
+        
+        # Remove the number from the address for further processing
+        if number_match:
+            address = address[len(number_match.group(0)):].strip()
+        
+        # Try to separate street from city
+        parts = address.split(',')
+        if len(parts) > 1:
+            street = parts[0].strip()
+            city = parts[1].strip()
+        else:
+            # Alternative splitting logic - look for postal code
+            postal_match = re.search(r'\b\d{5}\b', address)
+            if postal_match:
+                split_point = postal_match.start()
+                street = address[:split_point].strip()
+                city = address[split_point:].strip()
+            else:
+                street = address
+                city = ""
+        
+        return {
+            "number": number,
+            "street": street,
+            "city": city
+        }
+    
+    def validate_street_number_match(self, property_number: Optional[str], dpe_number: Optional[str]) -> bool:
+        """
+        Validate if two street numbers can be considered a match.
+        
+        Args:
+            property_number: Number from property address
+            dpe_number: Number from DPE address
+            
+        Returns:
+            bool: True if numbers match, False otherwise
+        """
+        # If either number is missing, no strict validation possible
+        if not property_number or not dpe_number:
+            return False
+        
+        # Clean the numbers (remove non-digit parts)
+        property_digits = re.sub(r'[^0-9]', '', property_number)
+        dpe_digits = re.sub(r'[^0-9]', '', dpe_number)
+        
+        # Exact match
+        if property_digits == dpe_digits:
+            return True
+        
+        # Allow adjacent numbers (±2) for possible data entry errors
+        try:
+            p_num = int(property_digits)
+            d_num = int(dpe_digits)
+            if abs(p_num - d_num) <= 2:
+                return True
+        except ValueError:
+            pass
+        
+        return False
+    
+    def normalize_address_for_matching(self, address: str) -> str:
+        """
+        Normalize address for matching.
+        
+        Args:
+            address: Address to normalize
+            
+        Returns:
+            Normalized address
         """
         if not isinstance(address, str) or not address or address.lower() == 'nan':
             return ""
         
-        # Convertir en majuscules
+        # Convert to uppercase
         address = address.upper()
         
-        # Supprimer les accents
+        # Remove accents
         address = unicodedata.normalize('NFKD', address).encode('ASCII', 'ignore').decode('utf-8')
         
-        # Supprimer les parenthèses et leur contenu
+        # Remove parentheses and their content
         address = re.sub(r'\([^)]*\)', '', address)
         
-        # Supprimer la ponctuation
+        # Remove punctuation
         address = re.sub(r'[^\w\s]', ' ', address)
         
-        # Normaliser les mots couramment utilisés dans les adresses
+        # Normalize common words
         address = address.replace(" AVENUE ", " AV ")
         address = address.replace(" BOULEVARD ", " BD ")
         address = address.replace(" PLACE ", " PL ")
         address = address.replace(" ALLEE ", " AL ")
         address = address.replace(" IMPASSE ", " IMP ")
         
-        # Supprimer les codes postaux pour éviter les confusions
+        # Remove postal codes to avoid confusion
         address = re.sub(r'\d{5}', '', address)
         
-        # Supprimer les mots non significatifs
-        non_significant = ["RUE", "DE", "DES", "LA", "LE", "LES", "DU", "ET", "EN", "SUR", "SOUS", "A", "AU", "AUX"]
-        words = address.split()
-        if len(words) > 2:  # Garder au moins le numéro et un mot significatif
-            words = [word for word in words if word not in non_significant]
-        
-        # Recombiner
-        address = " ".join(words)
-        
-        # Supprimer les espaces multiples
+        # Remove multiple spaces
         address = re.sub(r'\s+', ' ', address).strip()
         
         return address
     
-    def extract_year(self, date_str: str) -> Optional[int]:
+    def prepare_dpe_data_for_matching(self, dpe_data: pd.DataFrame) -> Optional[pd.DataFrame]:
         """
-        Extrait l'année d'une date.
+        Prepare DPE data for matching by normalizing addresses and extracting components.
         
         Args:
-            date_str: Date au format YYYY-MM-DD
+            dpe_data: DataFrame with DPE data
             
         Returns:
-            Optional[int]: Année ou None si invalide
+            Prepared DataFrame or None if failed
         """
-        if not isinstance(date_str, str):
+        if dpe_data is None or dpe_data.empty:
             return None
-            
+        
         try:
-            return int(date_str.split('-')[0])
-        except (ValueError, IndexError):
+            # Reset index to avoid duplication problems
+            dpe_data = dpe_data.reset_index(drop=True)
+            
+            # Check for Adresse_brute column
+            if 'Adresse_brute' not in dpe_data.columns:
+                self.logger.warning(f"Adresse_brute column missing in DPE data")
+                # Try to find another address column
+                address_cols = [col for col in dpe_data.columns if 'adresse' in col.lower() or 'address' in col.lower()]
+                if address_cols:
+                    self.logger.info(f"Using {address_cols[0]} column for address matching")
+                    dpe_data = dpe_data.reset_index(drop=True)
+                    dpe_data['Adresse_brute'] = dpe_data[address_cols[0]].fillna('').astype(str)
+                else:
+                    self.logger.warning(f"No address column found, matching impossible")
+                    return None
+            
+            # Handle NaN/NaT values
+            dpe_data['Adresse_brute'] = dpe_data['Adresse_brute'].fillna('').astype(str)
+            
+            # Check for duplicate columns again
+            if dpe_data.columns.duplicated().any():
+                self.logger.warning("Removing duplicate columns before address matching")
+                dpe_data = dpe_data.loc[:, ~dpe_data.columns.duplicated()]
+            
+            # Normalize addresses for matching
+            self.logger.info(f"Normalizing DPE addresses")
+            address_matching = []
+            address_components = []
+            
+            for adr in dpe_data['Adresse_brute']:
+                address_matching.append(self.normalize_address_for_matching(adr))
+                address_components.append(self.parse_address(adr))
+                
+            dpe_data['address_matching'] = address_matching
+            dpe_data['address_components'] = address_components
+            
+            return dpe_data
+            
+        except Exception as e:
+            self.logger.error(f"Error preparing DPE data: {str(e)}")
             return None
-    
-    def find_best_dpe_match(self, property_address: str, property_year: Optional[int], 
-                          dpe_data: pd.DataFrame, latitude: float, longitude: float) -> Optional[Dict[str, Any]]:
+        
+    def find_text_match_candidates(self, property_address: str, property_components: Dict[str, Any], 
+                                  dpe_data: pd.DataFrame) -> List[Dict[str, Any]]:
         """
-        Cette méthode est obsolète et sera supprimée. Utiliser le nouveau processus de matching à deux étapes.
-        """
-        self.logger.warning("Méthode obsolète: find_best_dpe_match. Utiliser le nouveau processus de matching à deux étapes.")
-        return None
-
-    def validate_with_geocoding(self, best_match: Dict[str, Any], candidates: pd.DataFrame, 
-                             latitude: float, longitude: float, current_score: float) -> Dict[str, Any]:
-        """
-        Cette méthode est obsolète et sera supprimée. Utiliser le nouveau processus de matching à deux étapes.
-        """
-        self.logger.warning("Méthode obsolète: validate_with_geocoding. Utiliser le nouveau processus de matching à deux étapes.")
-        return {'is_valid': False, 'distance': float('inf'), 'geo_score': 0.0}
-
-    def geocode_dpe_addresses(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
-        """
-        Géocode un lot d'adresses DPE en utilisant l'API de géocodage.
+        Find potential DPE matches by text similarity with strict number validation.
         
         Args:
-            df: DataFrame avec colonne 'q' contenant les adresses complètes
+            property_address: Normalized property address
+            property_components: Parsed property address components
+            dpe_data: DataFrame with DPE data
             
         Returns:
-            Optional[pd.DataFrame]: DataFrame avec les résultats du géocodage ou None si échec
+            List of candidate matches
         """
-        if df.empty:
-            return None
+        if property_address == "" or dpe_data.empty:
+            return []
         
-        # Vérifier que la colonne q existe
-        if 'q' not in df.columns:
-            self.logger.error("La colonne 'q' est requise pour le géocodage")
-            return None
+        candidates = []
+        property_number = property_components.get('number')
         
-        # Vérifier que la colonne candidate_index existe pour tracer les résultats
-        if 'candidate_index' not in df.columns:
-            self.logger.warning("La colonne 'candidate_index' est manquante, l'ajout")
-            df['candidate_index'] = range(len(df))
+        # Skip properties without street numbers if strict validation enabled
+        if self.STRICT_NUMBER_VALIDATION and not property_number:
+            self.logger.debug(f"Skipping property without street number: {property_address}")
+            return []
         
-        for attempt in range(1, self.MAX_RETRIES + 1):
-            try:
-                # Convertir le DataFrame en CSV
-                csv_buffer = io.StringIO()
-                df.to_csv(csv_buffer, index=False)
-                csv_content = csv_buffer.getvalue()
-                
-                # Pour le débogage
-                self.logger.info(f"Envoi du CSV pour géocodage avec {len(df)} adresses DPE")
-                
-                # Appeler l'API de géocodage
-                files = {'data': ('addresses.csv', csv_content.encode('utf-8'), 'text/csv')}
-                response = requests.post(
-                    self.GEOCODING_API_URL,
-                    files=files,
-                    timeout=120  # Augmentation du timeout pour les grands lots
-                )
-                
-                if response.status_code == 200:
-                    # Parser la réponse CSV
-                    result_df = pd.read_csv(io.StringIO(response.content.decode('utf-8')))
-                    
-                    # Vérifier que toutes les colonnes attendues sont présentes
-                    expected_columns = ['latitude', 'longitude', 'result_score']
-                    missing_columns = [col for col in expected_columns if col not in result_df.columns]
-                    
-                    if missing_columns:
-                        self.logger.warning(f"Colonnes manquantes dans la réponse du géocodage: {missing_columns}")
-                        # Continuer quand même si possible
-                    
-                    # Vérifier que l'index du candidat est préservé
-                    if 'candidate_index' not in result_df.columns:
-                        self.logger.warning("La colonne 'candidate_index' est absente de la réponse de géocodage")
-                        
-                        # Essayer de récupérer l'index depuis une autre colonne ou ajouter l'index
-                        if len(result_df) == len(df):
-                            self.logger.info("Ajout de l'index des candidats à la réponse de géocodage")
-                            result_df['candidate_index'] = df['candidate_index'].values
-                        else:
-                            self.logger.warning(f"Impossible de récupérer l'index des candidats: {len(result_df)} résultats pour {len(df)} requêtes")
-                    
-                    self.logger.info(f"Géocodage DPE réussi: {len(result_df)} résultats")
-                    
-                    return result_df
-                else:
-                    self.logger.warning(f"Erreur API géocodage ({response.status_code}) - Tentative {attempt}/{self.MAX_RETRIES}")
-                    self.logger.warning(f"Détail de l'erreur: {response.text}")
-                    
-            except Exception as e:
-                self.logger.warning(f"Erreur de requête géocodage - Tentative {attempt}/{self.MAX_RETRIES}: {str(e)}")
+        # Matching for each DPE
+        for _, dpe_row in dpe_data.iterrows():
+            dpe_address = dpe_row['address_matching']
+            if not isinstance(dpe_address, str) or dpe_address == "":
+                continue
             
-            # Attendre avant de réessayer
-            if attempt < self.MAX_RETRIES:
-                time.sleep(self.RETRY_DELAY * attempt)  # Délai exponentiel
+            # Get DPE address components
+            dpe_components = dpe_row['address_components']
+            dpe_number = dpe_components.get('number')
+            
+            # Check for number match if strict validation is enabled
+            if self.STRICT_NUMBER_VALIDATION:
+                if not self.validate_street_number_match(property_number, dpe_number):
+                    continue
+            
+            # Calculate text similarity
+            similarity = difflib.SequenceMatcher(None, property_address, dpe_address).ratio()
+            
+            # Apply appropriate threshold
+            threshold = self.SIMILARITY_THRESHOLD
+            if not property_number or not dpe_number:
+                threshold = self.HIGH_SIMILARITY_THRESHOLD
+                
+            if similarity >= threshold:
+                candidate = dpe_row.to_dict()
+                candidate['similarity'] = similarity
+                candidates.append(candidate)
         
-        self.logger.error("Échec du géocodage DPE après plusieurs tentatives")
-        return None
+        return candidates
+        
+    def extract_geopoint(self, candidate: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Extract latitude and longitude from _geopoint field.
+        
+        Args:
+            candidate: DPE candidate with potential _geopoint field
+            
+        Returns:
+            Tuple of (latitude, longitude) or (None, None) if not available
+        """
+        if '_geopoint' in candidate and candidate['_geopoint']:
+            try:
+                # _geopoint format is typically "lat,lon"
+                coords = candidate['_geopoint'].split(',')
+                if len(coords) == 2:
+                    return float(coords[0]), float(coords[1])
+            except (ValueError, IndexError):
+                pass
+        return None, None
     
     def calculate_geo_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """
-        Calcule la distance géographique entre deux points en kilomètres.
-        Utilise la formule de Haversine pour calculer la distance sur une sphère.
+        Calculate geographic distance between two points in kilometers.
+        Uses Haversine formula to calculate distance on a sphere.
         
         Args:
-            lat1: Latitude du point 1
-            lon1: Longitude du point 1
-            lat2: Latitude du point 2
-            lon2: Longitude du point 2
+            lat1: Latitude of point 1
+            lon1: Longitude of point 1
+            lat2: Latitude of point 2
+            lon2: Longitude of point 2
             
         Returns:
-            float: Distance en kilomètres
+            Distance in kilometers
         """
-        # Convertir les degrés en radians
+        # Convert degrees to radians
         lat1_rad = math.radians(lat1)
         lon1_rad = math.radians(lon1)
         lat2_rad = math.radians(lat2)
         lon2_rad = math.radians(lon2)
         
-        # Rayon de la Terre en km
+        # Earth radius in km
         earth_radius = 6371.0
         
-        # Différences de coordonnées
+        # Coordinate differences
         dlon = lon2_rad - lon1_rad
         dlat = lat2_rad - lat1_rad
         
-        # Formule de Haversine
+        # Haversine formula
         a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
         distance = earth_radius * c
         
         return distance
     
-    def save_sample_dpe(self, insee_code: str, dpe_data: pd.DataFrame):
+    def find_best_geo_match(self, property_lat: float, property_lon: float, 
+                           candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Sauvegarde des échantillons de DPE pour débogage.
+        Find the best match among candidates using 20m proximity threshold.
         
         Args:
-            insee_code: Code INSEE
-            dpe_data: DataFrame de DPEs
+            property_lat: Property latitude
+            property_lon: Property longitude
+            candidates: List of DPE candidates
+            
+        Returns:
+            Best match or None if no valid match found
+        """
+        if not candidates:
+            return None
+            
+        best_match = None
+        best_distance = float('inf')
+        
+        for candidate in candidates:
+            # Try to get coordinates from _geopoint first
+            dpe_lat, dpe_lon = self.extract_geopoint(candidate)
+            
+            # Skip if no coordinates
+            if dpe_lat is None or dpe_lon is None:
+                continue
+            
+            # Calculate distance
+            distance = self.calculate_geo_distance(property_lat, property_lon, dpe_lat, dpe_lon)
+            
+            # Check if within threshold (20m = 0.02km)
+            if distance <= self.PROXIMITY_THRESHOLD and distance < best_distance:
+                candidate['distance'] = distance
+                candidate['distance_m'] = distance * 1000  # Convert to meters for logging
+                best_distance = distance
+                best_match = candidate
+        
+        return best_match
+    
+    def calculate_match_confidence(self, match_data: Dict[str, Any]) -> int:
+        """
+        Calculate confidence score for a DPE match.
+        
+        Args:
+            match_data: Dict with match information
+            
+        Returns:
+            Confidence score (0-100)
+        """
+        base_score = 70
+        
+        # Text similarity factor (0-25 points)
+        similarity = match_data.get('similarity', 0)
+        text_score = min(int(similarity * 25), 25)
+        
+        # Geographic proximity factor (0-40 points)
+        distance_m = match_data.get('distance_m', 1000)
+        if distance_m < 5:
+            geo_score = 40
+        elif distance_m < 10:
+            geo_score = 35
+        elif distance_m < 15:
+            geo_score = 25
+        elif distance_m < 20:
+            geo_score = 15
+        else:
+            geo_score = 0
+        
+        # Street number match factor (0-25 points)
+        property_number = match_data['property_components'].get('number')
+        dpe_number = match_data['dpe_components'].get('number')
+        
+        if property_number and dpe_number:
+            if property_number == dpe_number:
+                number_score = 25  # Exact match
+            elif self.validate_street_number_match(property_number, dpe_number):
+                number_score = 15  # Similar number
+            else:
+                number_score = 0
+        else:
+            number_score = 0  # No numbers to compare
+        
+        # Calculate total score
+        total_score = base_score + text_score + geo_score + number_score
+        
+        # Cap at 100
+        return min(total_score, 100)
+    
+    def save_sample_dpe(self, location_id: str, dpe_data: pd.DataFrame):
+        """
+        Save sample DPEs for debugging.
+        
+        Args:
+            location_id: Location ID
+            dpe_data: DataFrame with DPE data
         """
         if dpe_data.empty or len(dpe_data) == 0:
             return
             
         try:
-            # S'assurer que l'index est unique avant de manipuler les données
+            # Ensure index is unique
             dpe_data_copy = dpe_data.copy().reset_index(drop=True)
             
-            # Vérifier et traiter les colonnes dupliquées
+            # Check for duplicate columns
             if dpe_data_copy.columns.duplicated().any():
-                # Garder uniquement la première occurrence de chaque colonne dupliquée
-                self.logger.warning("Suppression des colonnes dupliquées avant de créer l'échantillon")
+                self.logger.warning("Removing duplicate columns before creating sample")
                 dpe_data_copy = dpe_data_copy.loc[:, ~dpe_data_copy.columns.duplicated()]
             
-            # Sélectionner quelques échantillons
+            # Select samples
             sample_size = min(self.DEBUG_SAMPLE_SIZE, len(dpe_data_copy))
             samples = dpe_data_copy.sample(sample_size)
             
-            # Créer un fichier JSON pour les échantillons
-            samples_file = os.path.join(self.debug_dir, f"dpe_samples_{insee_code}.json")
+            # Create JSON file for samples
+            samples_file = os.path.join(self.debug_dir, f"dpe_samples_{location_id}.json")
             
-            # Convertir et sauvegarder
+            # Convert and save
             samples_dict = samples.to_dict(orient='records')
             
             with open(samples_file, 'w', encoding='utf-8') as f:
                 json.dump(samples_dict, f, ensure_ascii=False, indent=2)
                 
-            self.logger.info(f"Sauvegardé {sample_size} échantillons DPE dans {samples_file}")
+            self.logger.info(f"Saved {sample_size} DPE samples to {samples_file}")
             
-            # Afficher les adresses des échantillons
+            # Log sample addresses
             for i, sample in enumerate(samples_dict):
-                self.logger.info(f"Échantillon DPE {i+1}: Adresse brute: '{sample.get('Adresse_brute', '')}', Match: '{sample.get('address_matching', '')}'")
+                self.logger.info(f"DPE Sample {i+1}: Adresse brute: '{sample.get('Adresse_brute', '')}'")
                 
         except Exception as e:
-            self.logger.warning(f"Impossible de sauvegarder les échantillons DPE: {str(e)}")
+            self.logger.warning(f"Failed to save DPE samples: {str(e)}")
 
     def sanitize_cache_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Nettoie et prépare les données issues du cache.
+        Clean and prepare data from cache.
         
         Args:
-            df: DataFrame à nettoyer
+            df: DataFrame to clean
             
         Returns:
-            pd.DataFrame: DataFrame nettoyé et prêt à l'emploi
+            Cleaned DataFrame
         """
-        # Vérifier si le DataFrame est vide
+        # Check if DataFrame is empty
         if df.empty:
             return df
             
-        # Réinitialiser l'index pour éviter les problèmes de duplication
+        # Reset index to avoid duplication problems
         df = df.reset_index(drop=True)
         
-        # Normaliser les noms de colonnes pour éviter les duplications
+        # Normalize column names to avoid duplicates
         if df.columns.duplicated().any():
-            # Garder uniquement la première occurrence de chaque colonne dupliquée
+            # Keep only the first occurrence of each duplicate column
             df = df.loc[:, ~df.columns.duplicated()]
-            self.logger.warning("Colonnes dupliquées supprimées des données du cache")
+            self.logger.warning("Duplicate columns removed from cache data")
         
-        # S'assurer que nous avons une colonne Adresse_brute
+        # Ensure we have an Adresse_brute column
         if 'Adresse_brute' not in df.columns:
             address_cols = [col for col in df.columns if 'adresse' in col.lower() or 'address' in col.lower()]
             if address_cols:
-                self.logger.info(f"Utilisation de la colonne {address_cols[0]} comme Adresse_brute")
+                self.logger.info(f"Using {address_cols[0]} as Adresse_brute")
                 df['Adresse_brute'] = df[address_cols[0]]
             else:
-                self.logger.warning("Aucune colonne d'adresse trouvée dans les données du cache")
-                # Créer une colonne factice
-                df['Adresse_brute'] = "Adresse non disponible"
+                self.logger.warning("No address column found in cache data")
+                # Create dummy column
+                df['Adresse_brute'] = "Address not available"
         
-        # Nettoyer la colonne d'adresse
+        # Clean address column
         df['Adresse_brute'] = df['Adresse_brute'].fillna('').astype(str)
         
-        # Limiter à 10000 résultats max pour éviter des problèmes de mémoire et de performance
+        # Limit to 10000 results max to avoid memory issues
         if len(df) > 10000:
-            self.logger.warning(f"Trop de résultats dans le cache, limitation à 10000 résultats")
+            self.logger.warning(f"Too many results in cache, limiting to 10000")
             df = df.head(10000)
         
         return df
 
-    def find_text_match_candidates(self, property_address: str, dpe_data: pd.DataFrame) -> List[Dict[str, Any]]:
-        """
-        Trouve les candidats DPE par matching textuel.
-        
-        Args:
-            property_address: Adresse normalisée de la propriété
-            dpe_data: DataFrame des DPEs
-            
-        Returns:
-            List[Dict[str, Any]]: Liste des candidats DPE
-        """
-        if property_address == "" or dpe_data.empty:
-            return []
-        
-        candidates = []
-        
-        # Debug log to track progress
-        self.logger.debug(f"Matching address: '{property_address}' against {len(dpe_data)} DPE entries")
-        
-        # Safety limit to avoid processing too many DPE entries
-        max_dpe_to_process = min(10000, len(dpe_data))
-        processed_dpe = 0
-        matched_dpe = 0
-        
-        # Matching de similarité pour chaque DPE dans les données
-        for _, dpe_row in dpe_data.head(max_dpe_to_process).iterrows():
-            processed_dpe += 1
-            dpe_address = dpe_row['address_matching']
-            if not isinstance(dpe_address, str) or dpe_address == "":
-                continue
-            
-            # Calculer la similarité entre l'adresse de la propriété et l'adresse DPE
-            similarity = difflib.SequenceMatcher(None, property_address, dpe_address).ratio()
-            
-            # Si la similarité dépasse le seuil, ajouter aux candidats
-            if similarity >= self.SIMILARITY_THRESHOLD:
-                candidate = dpe_row.to_dict()
-                candidate['similarity'] = similarity
-                candidates.append(candidate)
-                matched_dpe += 1
-        
-        # Performance logging
-        if processed_dpe > 0:
-            self.logger.debug(f"Processed {processed_dpe}/{len(dpe_data)} DPE entries, found {matched_dpe} matches above threshold")
-        
-        return candidates
-
-    def geocode_dpe_candidates(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Géocode les candidats DPE en batch et valide les matches par proximité.
-        
-        Args:
-            candidates: Liste des candidats DPE
-            
-        Returns:
-            List[Dict[str, Any]]: Liste des DPE géocodés
-        """
-        if not candidates:
-            return []
-        
-        # Préparer les données pour le géocodage
-        geocoding_data = []
-        
-        self.logger.info(f"Préparation de {len(candidates)} candidats pour le géocodage")
-        
-        for i, candidate in enumerate(candidates):
-            # Récupérer l'adresse brute + code postal + ville
-            address = candidate.get('Adresse_brute', '')
-            postal_code = ''
-            city = ''
-            
-            # Chercher le code postal et la ville dans les champs disponibles
-            for field in ['code_postal_ban', 'code_postal']:
-                if field in candidate and candidate[field]:
-                    postal_code = str(candidate[field])
-                    break
-                
-            for field in ['nom_commune_ban', 'commune']:
-                if field in candidate and candidate[field]:
-                    city = str(candidate[field])
-                    break
-            
-            # Construire l'adresse complète pour le géocodage
-            if address:
-                full_address = address
-                if postal_code:
-                    full_address += f", {postal_code}"
-                if city:
-                    full_address += f", {city}"
-            
-                geocoding_data.append({
-                    'q': full_address,
-                    'candidate_index': i  # Pour retrouver le candidat original
-                })
-        
-        if not geocoding_data:
-            self.logger.warning("Aucune adresse valide parmi les candidats DPE")
-            return []
-        
-        self.logger.info(f"Envoi de {len(geocoding_data)} adresses DPE au géocodage")
-        
-        # Convertir en DataFrame pour l'API de géocodage
-        geocoding_df = pd.DataFrame(geocoding_data)
-        
-        # Appeler l'API de géocodage
-        result_df = self.geocode_dpe_addresses(geocoding_df)
-        
-        if result_df is None or result_df.empty:
-            self.logger.warning("Échec du géocodage des adresses DPE")
-            return []
-        
-        # Traiter les résultats et mettre à jour les candidats
-        validated_candidates = []
-        
-        # Vérifier la correspondance entre les résultats et les candidats originaux
-        if 'candidate_index' not in result_df.columns:
-            self.logger.warning("La colonne 'candidate_index' est manquante dans les résultats du géocodage")
-            return []
-        
-        successful_geocodes = 0
-        
-        for _, geocoded_row in result_df.iterrows():
-            if pd.isna(geocoded_row['latitude']) or pd.isna(geocoded_row['longitude']):
-                continue
-            
-            # Récupérer l'index du candidat
-            candidate_index = geocoded_row.get('candidate_index')
-            if pd.isna(candidate_index):
-                continue
-            
-            try:
-                candidate_index = int(candidate_index)
-            except (ValueError, TypeError):
-                continue
-            
-            if 0 <= candidate_index < len(candidates):
-                # Récupérer le candidat original
-                candidate = candidates[candidate_index].copy()
-                
-                # Ajouter les coordonnées géocodées
-                candidate['geocoded_latitude'] = float(geocoded_row['latitude'])
-                candidate['geocoded_longitude'] = float(geocoded_row['longitude'])
-                
-                # Ajouter aux candidats validés
-                validated_candidates.append(candidate)
-                successful_geocodes += 1
-            else:
-                self.logger.warning(f"Index de candidat invalide: {candidate_index} (max: {len(candidates)-1})")
-        
-        self.logger.info(f"Géocodage réussi pour {successful_geocodes}/{len(geocoding_data)} adresses DPE ({len(validated_candidates)} candidats validés)")
-        
-        return validated_candidates
-
 if __name__ == "__main__":
     import argparse
     
-    # Configurer la journalisation
+    # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Analyser les arguments
-    parser = argparse.ArgumentParser(description="Enrichissement des propriétés avec données DPE")
-    parser.add_argument("--input", help="Fichier CSV d'entrée", required=True)
-    parser.add_argument("--output", help="Fichier CSV de sortie", required=False)
-    parser.add_argument("--cache", help="Répertoire de cache DPE", required=False)
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="Property enrichment with DPE data")
+    parser.add_argument("--input", help="Input CSV file", required=True)
+    parser.add_argument("--output", help="Output CSV file", required=False)
+    parser.add_argument("--cache", help="DPE cache directory", required=False)
     
     args = parser.parse_args()
     output = args.output or args.input.replace(".csv", "_dpe_enriched.csv")
     cache_dir = args.cache or "data/cache/dpe"
     
-    # Exécuter le processeur
+    # Run processor
     enricher = DPEEnrichmentService(args.input, output, cache_dir)
     success = enricher.process()
     
-    exit(0 if success else 1) 
+    exit(0 if success else 1)
