@@ -865,7 +865,7 @@ class DPEEnrichmentService(ProcessorBase):
             return None
         
     def find_text_match_candidates(self, property_address: str, property_components: Dict[str, Any], 
-                                  dpe_data: pd.DataFrame) -> List[Dict[str, Any]]:
+                             dpe_data: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         Find potential DPE matches by text similarity with strict number validation.
         
@@ -912,12 +912,56 @@ class DPEEnrichmentService(ProcessorBase):
                 threshold = self.HIGH_SIMILARITY_THRESHOLD
                 
             if similarity >= threshold:
+                # Create a copy of all DPE data for this match
                 candidate = dpe_row.to_dict()
+                
+                # Extract/transform specific fields for database compatibility
+                
+                # 1. DPE Number
+                if 'dpe_number' not in candidate and 'numero_dpe' in candidate:
+                    candidate['dpe_number'] = candidate['numero_dpe']
+                
+                # 2. DPE Date (try multiple possible fields)
+                if 'dpe_date' not in candidate:
+                    for date_field in ['date_etablissement_dpe', 'date_visite_diagnostiqueur', 'date_derniere_modification_dpe']:
+                        if date_field in candidate and pd.notna(candidate[date_field]):
+                            candidate['dpe_date'] = candidate[date_field]
+                            break
+                
+                # 3. Energy class
+                if 'dpe_energy_class' not in candidate:
+                    for class_field in ['classe_consommation_energie', 'etiquette_dpe']:
+                        if class_field in candidate and pd.notna(candidate[class_field]):
+                            candidate['dpe_energy_class'] = candidate[class_field]
+                            break
+                
+                # 4. GES class
+                if 'dpe_ges_class' not in candidate:
+                    for class_field in ['classe_estimation_ges', 'etiquette_ges']:
+                        if class_field in candidate and pd.notna(candidate[class_field]):
+                            candidate['dpe_ges_class'] = candidate[class_field]
+                            break
+                
+                # 5. Construction year
+                if 'construction_year' not in candidate:
+                    for year_field in ['annee_construction', 'periode_construction']:
+                        if year_field in candidate and pd.notna(candidate[year_field]):
+                            # Try to convert string period to year if needed
+                            try:
+                                candidate['construction_year'] = int(candidate[year_field])
+                            except (ValueError, TypeError):
+                                # Handle period descriptions by taking the midpoint or earliest year
+                                if isinstance(candidate[year_field], str):
+                                    year_match = re.search(r'(\d{4})', candidate[year_field])
+                                    if year_match:
+                                        candidate['construction_year'] = int(year_match.group(1))
+                
+                # Add similarity score to candidate
                 candidate['similarity'] = similarity
                 candidates.append(candidate)
         
         return candidates
-        
+
     def extract_geopoint(self, candidate: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
         """
         Extract latitude and longitude from _geopoint field.
