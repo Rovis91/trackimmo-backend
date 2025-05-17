@@ -12,14 +12,23 @@ trackimmo/
     └── enrichment/
         ├── __init__.py
         ├── processor_base.py                # Classe de base pour tous les processeurs
-        ├── 01_data_normalizer.py            # Normalisation des données brutes
-        ├── 02_city_resolver.py              # Résolution des villes et codes postaux
-        ├── 03_geocoding_service.py          # Géocodage des adresses
-        ├── 04_dpe_enrichment.py             # Enrichissement avec données DPE
-        ├── 05_price_estimator.py            # Estimation des prix actuels
-        ├── 06_db_integrator.py              # Intégration en base de données
+        ├── data_normalizer.py               # Normalisation des données brutes
+        ├── city_resolver.py                 # Résolution des villes et codes postaux
+        ├── geocoding_service.py             # Géocodage des adresses
+        ├── dpe_enrichment.py                # Enrichissement avec données DPE
+        ├── price_estimator.py               # Estimation des prix actuels
+        ├── db_integrator.py                 # Intégration en base de données
         └── enrichment_orchestrator.py       # Orchestration du processus complet
 ```
+
+Le module utilise une approche de pipeline pour traiter les données:
+
+1. **Normalisation**: Nettoyage et uniformisation des données brutes
+2. **Résolution des villes**: Identification des codes postaux et INSEE
+3. **Géocodage**: Obtention des coordonnées géographiques des adresses
+4. **Enrichissement DPE**: Ajout des diagnostics de performance énergétique
+5. **Estimation des prix**: Calcul des prix actuels estimés
+6. **Intégration**: Sauvegarde des données enrichies en base de données
 
 ## Classe de base (processor_base.py)
 
@@ -107,7 +116,7 @@ class ProcessorBase:
             return False
 ```
 
-## 1. Normalisation des données (01_data_normalizer.py)
+## 1. Normalisation des données (data_normalizer.py)
 
 Ce processeur est responsable du nettoyage et de la normalisation des données brutes.
 
@@ -323,7 +332,7 @@ class DataNormalizer(ProcessorBase):
         return df[valid_mask]
 ```
 
-## 2. Résolution des villes et codes postaux (02_city_resolver.py)
+## 2. Résolution des villes et codes postaux (city_resolver.py)
 
 Ce processeur est responsable de la résolution des villes et de la récupération des codes postaux et INSEE.
 
@@ -625,7 +634,7 @@ class CityResolver(ProcessorBase):
             return False
 ```
 
-## 3. Géocodage des adresses (03_geocoding_service.py)
+## 3. Géocodage des adresses (geocoding_service.py)
 
 Ce processeur est responsable du géocodage des adresses pour obtenir les coordonnées géographiques.
 
@@ -852,7 +861,7 @@ class GeocodingService(ProcessorBase):
         return df
 ```
 
-## 4. Enrichissement DPE (04_dpe_enrichment.py)
+## 4. Enrichissement DPE (dpe_enrichment.py)
 
 Ce processeur est responsable de l'enrichissement des propriétés avec des données de diagnostic énergétique.
 
@@ -1287,7 +1296,7 @@ class DPEEnrichmentService(ProcessorBase):
             return None
 ```
 
-## 5. Estimation des prix (05_price_estimator.py)
+## 5. Estimation des prix (price_estimator.py)
 
 Ce processeur est responsable de l'estimation des prix actuels des propriétés.
 
@@ -1567,7 +1576,7 @@ class PriceEstimationService(ProcessorBase):
         return max(min(score, 1.0), 0.0)
 ```
 
-## 6. Intégration à la base de données (06_db_integrator.py)
+## 6. Intégration à la base de données (db_integrator.py)
 
 Ce processeur est responsable de l'intégration des propriétés enrichies dans la base de données.
 
@@ -1854,12 +1863,12 @@ from typing import Dict, Any, Optional, List
 
 # Importer les processeurs
 from .processor_base import ProcessorBase
-from .01_data_normalizer import DataNormalizer
-from .02_city_resolver import CityResolver
-from .03_geocoding_service import GeocodingService
-from .04_dpe_enrichment import DPEEnrichmentService
-from .05_price_estimator import PriceEstimationService
-from .06_db_integrator import DBIntegrationService
+from .data_normalizer import DataNormalizer
+from .city_resolver import CityResolver
+from .geocoding_service import GeocodingService
+from .dpe_enrichment import DPEEnrichmentService
+from .price_estimator import PriceEstimationService
+from .db_integrator import DBIntegrationService
 
 class EnrichmentOrchestrator:
     """Orchestrateur du processus complet d'enrichissement des données immobilières."""

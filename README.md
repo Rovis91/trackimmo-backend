@@ -4,7 +4,9 @@ Backend service for TrackImmo, a real estate data scraping and enrichment applic
 
 ## Features
 
-- **Data Scraping**: Automated extraction of real estate transaction data using Playwright
+- **Data Scraping**:
+  - Automated extraction of real estate transaction data using Playwright
+  - City data collection including INSEE codes and property market prices
 - **Data Enrichment**:
   - Geocoding of addresses using the French government API
   - DPE (energy performance) data integration from official sources
@@ -12,18 +14,6 @@ Backend service for TrackImmo, a real estate data scraping and enrichment applic
 - **REST API**: Comprehensive FastAPI endpoints with JWT authentication
 - **Monitoring**: Built-in metrics and logging for application performance
 - **Export Utilities**: CSV export for processed data
-
-## Project Status
-
-The project is currently in development phase with approximately 75% completion:
-- ✅ Core infrastructure and API design complete
-- ✅ Data scraping and processing modules implemented
-- ✅ Authentication system in place
-- ⏳ Testing across various data types in progress
-- ⏳ Data import functionality partially implemented
-- ⏳ Performance optimizations pending
-
-For detailed task status, see [TASKS.md](TASKS.md).
 
 ## Installation
 
@@ -116,8 +106,17 @@ uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
     - `data_models.py`: Pydantic models
     - `db_models.py`: SQLAlchemy models
   - `modules/`: Core functionality
-    - `scraper.py`: Web scraping module
-    - `processor.py`: Data enrichment
+    - `scraper/`: Web scraping module for property data
+    - `city_scraper/`: City data collection module
+      - `city_scraper.py`: City data extraction
+      - `db_operations.py`: City database operations
+    - `enrichment/`: Data enrichment pipeline
+      - `data_normalizer.py`: Data cleaning and normalization
+      - `city_resolver.py`: City code resolution
+      - `geocoding_service.py`: Address geocoding
+      - `dpe_enrichment.py`: Energy performance data integration
+      - `price_estimator.py`: Property price estimation
+      - `db_integrator.py`: Database integration
     - `db_manager.py`: Database operations (Supabase integration)
   - `utils/`: Utility functions
     - `logger.py`: Logging configuration
@@ -131,44 +130,8 @@ uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
 
 - `API_DOCS.md`: API endpoints and usage
 - `DB_SCHEMA.md`: Database schema
-- `DPE_API.md`: DPE API integration
-- `GEOCODING_API.md`: Geocoding API integration
-- `PRICE_ESTIMATION.md`: Price estimation algorithm
-- `SCRAPING.md`: Scraping methodology
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
-3. Commit your changes (`git commit -m 'Add some feature'`)
-4. Push to the branch (`git push origin feature/your-feature`)
-5. Create a new Pull Request
-
-## License
-
-MIT License - See [LICENSE](LICENSE) for details.
-
-## Running Tests
-
-### Scraper Tests
-
-The scraper module can be tested in both mock mode and real scraping mode:
-
-#### Mock Mode (Default)
-
-This mode uses mock data instead of real web scraping, making it fast and reliable for testing:
-
-```bash
-python -m trackimmo.tests.test_scraper
-```
-
-#### Real Scraping Mode
-
-This mode performs actual web scraping. It requires an internet connection and the Playwright browsers to be installed:
-
-```bash
-python -m trackimmo.tests.test_scraper --real
-```
+- `trackimmo/modules/enrichment/enrichment_doc.md`: Enrichment module documentation
+- `trackimmo/modules/city_scraper/city_scraper_doc.md`: City scraper module documentation
 
 ## Modules
 
@@ -181,6 +144,28 @@ The scraper module handles the extraction of property data from ImmoData. It inc
 - `URLGenerator`: Creates URLs for scraping
 - `GeoDivider`: Divides geographic areas into smaller regions
 
+### City Scraper Module
+
+The city scraper module collects data about French cities including INSEE codes, postal codes, departments, and average property prices. It includes:
+
+- `CityDataScraper`: Main scraper class for city data
+- `CityDatabaseOperations`: Database operations for city data
+
+This module enhances the application by providing up-to-date city information and market prices for better analysis and enrichment of property data.
+
+### Enrichment Module
+
+The enrichment module processes raw property data through a pipeline of steps to clean, enhance, and normalize it. The process includes:
+
+1. **Data Normalization**: Cleans and standardizes raw data
+2. **City Resolution**: Maps city names to postal and INSEE codes
+3. **Geocoding**: Adds geographical coordinates to property addresses
+4. **DPE Enrichment**: Adds energy performance data from official sources
+5. **Price Estimation**: Calculates current market values based on historical data
+6. **Database Integration**: Stores processed data in the database
+
+Each step is handled by a dedicated processor, allowing for modular execution and easy maintenance.
+
 ### API Module
 
 (To be implemented)
@@ -188,7 +173,3 @@ The scraper module handles the extraction of property data from ImmoData. It inc
 ### Models
 
 Data models for the application are defined in `trackimmo/models/data_models.py`.
-
-## Configuration
-
-Configuration settings are defined in `trackimmo/config.py` and can be overridden using environment variables or a `.env` file.
