@@ -41,7 +41,7 @@ def create_app() -> FastAPI:
     
     # Include routers
     app.include_router(router, prefix=settings.API_V1_STR)
-    
+    app.router.include_router(router)
     # Customize OpenAPI schema
     def custom_openapi():
         if app.openapi_schema:

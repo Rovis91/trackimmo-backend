@@ -4,9 +4,9 @@ Configuration module for TrackImmo backend.
 This module loads configuration variables from environment variables.
 """
 import os
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, List, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator, PostgresDsn
+from pydantic import field_validator
 
 
 class Settings(BaseSettings):
@@ -23,8 +23,24 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     
     # Database
-    DATABASE_URL: Optional[Union[PostgresDsn, str]] = "sqlite:///./test.db"  # Default for development
+    DATABASE_URL: Optional[str] = "sqlite:///./test.db"  # Default for development
     
+    # Supabase configuration
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+    
+    # API configuration
+    API_KEY: str = ""
+    API_BASE_URL: str = ""
+
+    # Email configuration
+    EMAIL_SENDER: str = ""
+    SMTP_SERVER: str = "smtp.hostinger.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    CTO_EMAIL: str = ""
+
     # CORS
     CORS_ORIGINS: List[str] = ["*"]
     
@@ -54,7 +70,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
     
     @field_validator("DATABASE_URL")
-    def validate_database_url(cls, v: Optional[str]) -> Any:
+    def validate_database_url(cls, v: Optional[str]) -> str:
         """Validate the database URL."""
         return v
 
