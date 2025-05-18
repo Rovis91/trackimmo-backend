@@ -369,7 +369,6 @@ class BrowserManager:
                 - Indicator if subdivisions were performed
         """
         url = url_data["url"]
-        max_recursion = 2  # Limit to 2 levels of subdivision
         
         # Display URL and metadata
         subdivision_level = url_data.get("subdivision_level", 0)
@@ -405,17 +404,21 @@ class BrowserManager:
                 # Always start by collecting the properties from this level
                 all_properties.extend(properties)
                 
-                # If adaptive generator provided, sufficient number of properties, and max level not reached
-                if adaptive_generator and property_count >= 90 and recursion_depth < max_recursion:
-                    # Log subdivision decision
+                # Check if we need further subdivision (when we hit the 101 property limit)
+                # Removed max_recursion constraint and check subdivision_level against max_subdivision_level
+                if adaptive_generator and property_count >= 95:
+                    
+                    # Log subdivision decision based on current subdivision level
                     if subdivision_level == 0:
                         logger.warning(f"URL has {property_count} properties, subdividing by TYPE...")
                     elif subdivision_level == 1:
                         logger.warning(f"URL has {property_count} properties, subdividing by PRICE...")
+                    elif subdivision_level == 2:
+                        logger.warning(f"URL has {property_count} properties, refining price subdivision...")
                     else:
-                        logger.warning(f"URL has {property_count} properties, additional subdivision...")
+                        logger.warning(f"URL has {property_count} properties, performing deep subdivision (level {subdivision_level+1})...")
                         
-                    # Pass extracted properties for price analysis
+                    # Pass extracted properties for appropriate subdivision
                     subdivided_urls = adaptive_generator.subdivide_if_needed(
                         url_data, property_count, properties
                     )

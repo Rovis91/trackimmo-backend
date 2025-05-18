@@ -179,6 +179,20 @@ CREATE TABLE dpe (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Processing Jobs Table: For tracking background processing operations
+CREATE TABLE IF NOT EXISTS processing_jobs (
+    job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID NOT NULL REFERENCES clients(client_id),
+    status VARCHAR NOT NULL, -- pending, processing, completed, failed
+    attempt_count INTEGER DEFAULT 0,
+    last_attempt TIMESTAMP,
+    next_attempt TIMESTAMP,
+    result JSONB,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Row Level Security (RLS) Policies
 -- These should be implemented to secure data access
 
@@ -216,6 +230,17 @@ ALTER TABLE addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE client_addresses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dpe ENABLE ROW LEVEL SECURITY;
 ALTER TABLE secondary_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE processing_jobs ENABLE ROW LEVEL SECURITY;
+
+-- Row Level Security Policies for processing_jobs
+CREATE POLICY "Clients can view their own jobs" ON processing_jobs
+    FOR SELECT USING (
+        auth.uid() = client_id OR 
+        EXISTS (
+            SELECT 1 FROM clients 
+            WHERE clients.client_id = auth.uid() AND clients.role = 'admin'
+        )
+    );
 
 -- Functions and Triggers
 
@@ -251,6 +276,11 @@ FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 CREATE TRIGGER update_secondary_users_timestamp
 BEFORE UPDATE ON secondary_users
+FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+
+-- Create triggers for updating timestamps
+CREATE TRIGGER IF NOT EXISTS update_processing_jobs_timestamp
+BEFORE UPDATE ON processing_jobs
 FOR EACH ROW EXECUTE FUNCTION update_timestamp();
 
 -- Function to find or create cities by name and postal code

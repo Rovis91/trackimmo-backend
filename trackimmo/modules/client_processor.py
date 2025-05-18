@@ -17,7 +17,6 @@ logger = get_logger(__name__)
 async def process_client_data(client_id: str) -> Dict[str, Any]:
     """
     Process a client's data and assign new properties.
-    Logs a job in processing_jobs for every attempt.
     
     Args:
         client_id: The client's UUID
@@ -26,24 +25,10 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         Dict with results of processing
     """
     logger.info(f"Processing client {client_id}")
-    now = datetime.now()
-    job_id = str(uuid.uuid4())
+    
     try:
-        with DBManager() as db:
-            # Insert job as 'processing'
-            db.get_client().table("processing_jobs").insert({
-                "job_id": job_id,
-                "client_id": client_id,
-                "status": "processing",
-                "attempt_count": 1,
-                "last_attempt": now.isoformat(),
-                "next_attempt": (now + timedelta(hours=1)).isoformat(),
-                "error_message": None,
-                "created_at": now.isoformat(),
-                "updated_at": now.isoformat()
-            }).execute()
         # 1. Get client data
-        client = get_client_by_id(client_id)
+        client = await get_client_by_id(client_id)
         if not client or client["status"] != "active":
             raise ValueError(f"Client {client_id} not found or inactive")
         
@@ -55,23 +40,17 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         
         # 4. Assign properties to client
         assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
-        new_addresses = assign_properties_to_client(client, assign_count)
+        new_addresses = await assign_properties_to_client(client, assign_count)
         
         # 5. Send notification
         if new_addresses:
             send_client_notification(client, new_addresses)
         
         # 6. Update client's last_updated field
-        update_client_last_updated(client_id)
+        await update_client_last_updated(client_id)
         
         logger.info(f"Processed client {client_id}: {len(new_addresses)} properties assigned")
         
-        # Mark job as completed
-        with DBManager() as db:
-            db.get_client().table("processing_jobs").update({
-                "status": "completed",
-                "updated_at": datetime.now().isoformat()
-            }).eq("job_id", job_id).execute()
         return {
             "success": True,
             "properties_assigned": len(new_addresses),
@@ -79,16 +58,9 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Error processing client {client_id}: {str(e)}")
-        # Mark job as failed
-        with DBManager() as db:
-            db.get_client().table("processing_jobs").update({
-                "status": "failed",
-                "error_message": str(e),
-                "updated_at": datetime.now().isoformat()
-            }).eq("job_id", job_id).execute()
         raise
 
-def get_client_by_id(client_id: str) -> Optional[Dict[str, Any]]:
+async def get_client_by_id(client_id: str) -> Optional[Dict[str, Any]]:
     """Get a client by ID."""
     with DBManager() as db:
         response = db.get_client().table("clients").select("*").eq("client_id", client_id).execute()
@@ -193,7 +165,7 @@ async def scrape_properties_for_client(client: Dict[str, Any]):
             except Exception as e:
                 logger.error(f"Error scraping properties for city {city['city_id']}: {str(e)}")
 
-def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -> List[Dict[str, Any]]:
+async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -> List[Dict[str, Any]]:
     """
     Assign properties to a client.
     
@@ -282,7 +254,7 @@ def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -> List
         logger.info(f"Assigned {len(assigned_properties)} properties to client {client_id}")
         return assigned_properties
 
-def update_client_last_updated(client_id: str):
+async def update_client_last_updated(client_id: str):
     """Update the client's last_updated timestamp."""
     now = datetime.now().isoformat()
     

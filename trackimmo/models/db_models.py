@@ -257,14 +257,14 @@ class ProcessingJob(Base):
     
     job_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     client_id = Column(UUID(as_uuid=True), ForeignKey("clients.client_id"))
-    status = Column(String, nullable=False)  # queued, running, completed, failed
-    job_type = Column(String, nullable=False)  # city_processing, enrichment, etc.
-    parameters = Column(JSONB)  # Job parameters
-    progress = Column(Integer, default=0)
-    result = Column(JSONB)  # Job results
-    error_message = Column(Text)
+    status = Column(String, nullable=False)  # pending, processing, completed, failed
+    attempt_count = Column(Integer, default=0)
+    last_attempt = Column(DateTime)
+    next_attempt = Column(DateTime, nullable=True)
+    result = Column(JSONB, nullable=True)
+    error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     
     def __repr__(self):
-        return f"<ProcessingJob {self.job_id} ({self.status})>" 
+        return f"<ProcessingJob {self.job_id} - {self.status}>" 

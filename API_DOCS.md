@@ -44,7 +44,7 @@ Returns the current API status. Used for monitoring and health checks.
 POST /api/process-client
 ```
 
-Processes a client's data, including city enrichment, property scraping, and property assignment.
+Initiates asynchronous processing of a client's data, including city enrichment, property scraping, and property assignment. Returns immediately with a job ID.
 
 **Request Body:**
 
@@ -59,19 +59,57 @@ Processes a client's data, including city enrichment, property scraping, and pro
 ```json
 {
   "success": true,
-  "properties_assigned": 5,
-  "client_id": "uuid-of-client"
+  "job_id": "uuid-of-job",
+  "client_id": "uuid-of-client",
+  "message": "Processing started"
 }
 ```
 
 **Processing Steps:**
 
 1. Validates client existence and active status
-2. Updates city data if older than 3 months or missing information
-3. Scrapes new properties for the client's selected cities
-4. Assigns properties to the client based on their subscription tier
-5. Sends notification email to the client
-6. Updates the client's `last_updated` timestamp
+2. Creates a job record in the `processing_jobs` table
+3. Returns immediately with the job ID
+4. In the background:
+   - Updates city data if older than 3 months or missing information
+   - Scrapes new properties for the client's selected cities
+   - Assigns properties to the client based on their subscription tier
+   - Sends notification email to the client
+   - Updates the client's `last_updated` timestamp
+   - Updates the job status to "completed" or "failed"
+
+### Job Status
+
+``` txt
+GET /api/job-status/{job_id}
+```
+
+Gets the current status of a client processing job.
+
+**Path Parameters:**
+
+- `job_id`: UUID of the job to check
+
+**Response:**
+
+```json
+{
+  "job_id": "uuid-of-job",
+  "client_id": "uuid-of-client",
+  "status": "completed",
+  "properties_assigned": 5,
+  "error_message": null,
+  "created_at": "2023-08-01T14:30:00Z",
+  "updated_at": "2023-08-01T14:35:00Z"
+}
+```
+
+**Status Values:**
+
+- `pending`: Job is waiting to be processed (in retry queue)
+- `processing`: Job is currently being processed
+- `completed`: Job has successfully completed
+- `failed`: Job has failed after all retry attempts
 
 ### Process Retry Queue
 

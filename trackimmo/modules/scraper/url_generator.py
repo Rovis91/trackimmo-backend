@@ -133,9 +133,10 @@ class AdaptiveUrlGenerator:
             base_generator: Base URL generator
         """
         self.base_generator = base_generator
-        self.threshold_min = 90  # Minimum threshold for subdivision
+        self.threshold_min = 95  # Minimum threshold for subdivision (raised from 90 to 95)
         self.max_price = 25000000  # Maximum price (25 million €)
         self.num_price_ranges = 10  # Total number of price ranges
+        self.max_subdivision_level = 999  # Effectively unlimited subdivision levels
     
     def subdivide_if_needed(
         self, 
@@ -159,6 +160,16 @@ class AdaptiveUrlGenerator:
                 # Second step: subdivision by price range
                 logger.warning(f"URL has {property_count} properties, subdividing by price...")
                 return self._subdivide_by_dynamic_price_ranges(url_data, properties)
+            
+            elif subdivision_level == 2:
+                # Third step: further subdivision by refined price ranges
+                logger.warning(f"URL has {property_count} properties, refining price subdivision...")
+                return self._refine_price_subdivision(url_data, properties)
+            
+            else:
+                # Deep subdivision: binary subdivision of price ranges
+                logger.warning(f"URL has {property_count} properties, performing deep subdivision (level {subdivision_level+1})...")
+                return self._deep_price_subdivision(url_data, properties)
         
         return []
 
@@ -242,8 +253,15 @@ class AdaptiveUrlGenerator:
         type_codes = [self.base_generator.property_type_mapping[t] for t in property_types 
                      if t in self.base_generator.property_type_mapping]
         
+        # Check if we're at the API limit (101 properties)
+        use_aggressive_division = len(properties) >= 101
+        num_central_divisions = 16 if use_aggressive_division else 12
+        
         # Generate price ranges based on property analysis
-        price_ranges = self._generate_optimal_price_ranges(properties)
+        price_ranges = self._generate_optimal_price_ranges(
+            properties, 
+            num_central_divisions=num_central_divisions
+        )
         
         # Create a URL for each price range
         result = []
@@ -283,24 +301,264 @@ class AdaptiveUrlGenerator:
                 "period": period,
                 "property_types": property_types,
                 "price_range": f"{min_price_str}-{max_price_str}",
+                "min_price": min_price,
+                "max_price": max_price,
                 "subdivision_level": 2,  # Second level of subdivision
                 "is_price_subdivision": True
             })
         
         # Detailed log of generated price ranges
         ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
-        logger.info(f"Level 2 subdivision: {len(result)} URLs by price ranges")
+        strategy = "aggressive" if use_aggressive_division else "standard"
+        logger.info(f"Level 2 subdivision: {len(result)} URLs by price ranges ({strategy} strategy)")
         logger.info(f"Generated price ranges: {', '.join(ranges_str)}")
         
         return result
     
-    def _generate_optimal_price_ranges(self, properties: List[Dict]) -> List[Tuple[float, float]]:
+    def _refine_price_subdivision(
+        self, 
+        url_data: Dict, 
+        properties: List[Dict]
+    ) -> List[Dict]:
+        """
+        Third level subdivision: splits an existing price range into smaller segments.
+        
+        Args:
+            url_data: URL data with existing price range
+            properties: Properties found with current range
+            
+        Returns:
+            List[Dict]: New subdivided URLs with refined price ranges
+        """
+        # Get basic information
+        rect = url_data["rectangle"]
+        period = url_data["period"]
+        property_type = url_data["property_type"]
+        property_types = url_data.get("property_types", [])
+        
+        # Get original price range
+        min_price = url_data.get("min_price", 0)
+        max_price = url_data.get("max_price", self.max_price)
+        
+        # Get type codes for URL
+        type_codes = [self.base_generator.property_type_mapping[t] for t in property_types 
+                     if t in self.base_generator.property_type_mapping]
+        
+        # Extract prices from the current subset of properties
+        prices = [p.get("price", 0) for p in properties if p.get("price", 0) > 0]
+        
+        # If we reached the exact API limit (101 properties), use a more aggressive subdivision
+        # strategy to ensure we capture all properties
+        use_aggressive_division = len(properties) >= 101
+        num_divisions = 6 if use_aggressive_division else 4
+        
+        # If we don't have enough prices to analyze, simply split into equal parts
+        if len(prices) < 20:
+            price_step = (max_price - min_price) / num_divisions
+            price_ranges = []
+            for i in range(num_divisions):
+                price_min = min_price + i * price_step
+                price_max = min_price + (i + 1) * price_step
+                price_ranges.append((price_min, price_max))
+        else:
+            # Sort prices for percentile calculation
+            prices.sort()
+            
+            if use_aggressive_division:
+                # Use 6 divisions (more granular) when we're at the API limit
+                # Calculate percentiles at 16.7%, 33.3%, 50%, 66.7%, and 83.3%
+                p1 = prices[int(0.167 * len(prices))]
+                p2 = prices[int(0.333 * len(prices))]
+                p3 = prices[int(0.500 * len(prices))]
+                p4 = prices[int(0.667 * len(prices))]
+                p5 = prices[int(0.833 * len(prices))]
+                
+                # Create 6 price ranges based on percentiles
+                price_ranges = [
+                    (min_price, p1),
+                    (p1, p2),
+                    (p2, p3),
+                    (p3, p4),
+                    (p4, p5),
+                    (p5, max_price)
+                ]
+            else:
+                # Standard case: quartiles (25%, 50%, 75%)
+                q1 = prices[int(0.25 * len(prices))]
+                q2 = prices[int(0.50 * len(prices))]
+                q3 = prices[int(0.75 * len(prices))]
+                
+                # Create 4 price ranges based on quartiles
+                price_ranges = [
+                    (min_price, q1),
+                    (q1, q2),
+                    (q2, q3),
+                    (q3, max_price)
+                ]
+                
+        # Create a URL for each price range
+        result = []
+        base_type = property_type.split('_price_')[0] if '_price_' in property_type else property_type
+        
+        for i, (min_p, max_p) in enumerate(price_ranges):
+            # Make sure prices are at least 1 euro apart to avoid duplicates
+            if max_p - min_p < 1:
+                max_p = min_p + 1
+                
+            # Format prices for URL (avoid commas)
+            min_price_str = str(int(min_p))
+            max_price_str = str(int(max_p))
+            
+            # Create URL with price filter
+            url_params = {
+                "center": f"{rect['center_lon']};{rect['center_lat']}",
+                "zoom": str(rect['zoom']),
+                "propertytypes": ",".join(type_codes),
+                "minmonthyear": period,
+                "maxmonthyear": period,
+                "minprice": min_price_str,
+                "maxprice": max_price_str
+            }
+            
+            query = urllib.parse.urlencode(url_params)
+            url = f"{self.base_generator.base_url}?{query}"
+            
+            # Create descriptive label for this price range
+            range_label = f"{base_type}_price_{min_price_str}_{max_price_str}"
+            
+            # Add to list
+            result.append({
+                "url": url,
+                "rectangle": rect,
+                "property_type": range_label,
+                "period": period,
+                "property_types": property_types,
+                "price_range": f"{min_price_str}-{max_price_str}",
+                "min_price": min_p,
+                "max_price": max_p,
+                "subdivision_level": 3,  # Third level of subdivision
+                "is_price_subdivision": True
+            })
+        
+        # Detailed log of generated price ranges
+        ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
+        logger.info(f"Level 3 subdivision: {len(result)} URLs by refined price ranges")
+        strategy = "aggressive" if use_aggressive_division else "standard"
+        logger.info(f"Using {strategy} subdivision strategy with {num_divisions} divisions")
+        logger.info(f"Refined price ranges: {', '.join(ranges_str)}")
+        
+        return result
+        
+    def _deep_price_subdivision(
+        self, 
+        url_data: Dict, 
+        properties: List[Dict]
+    ) -> List[Dict]:
+        """
+        Deep subdivision beyond level 3: uses binary splitting strategy.
+        This method is called recursively for very dense property areas.
+        
+        Args:
+            url_data: URL data with existing price range
+            properties: Properties found with current range
+            
+        Returns:
+            List[Dict]: New subdivided URLs with binary price ranges
+        """
+        # Get basic information
+        rect = url_data["rectangle"]
+        period = url_data["period"]
+        property_type = url_data["property_type"]
+        property_types = url_data.get("property_types", [])
+        subdivision_level = url_data.get("subdivision_level", 3)
+        
+        # Get original price range
+        min_price = url_data.get("min_price", 0)
+        max_price = url_data.get("max_price", self.max_price)
+        
+        # Get type codes for URL
+        type_codes = [self.base_generator.property_type_mapping[t] for t in property_types 
+                     if t in self.base_generator.property_type_mapping]
+        
+        # For deep subdivision, always split in half (binary splitting)
+        # This is the most reliable strategy when we keep hitting API limits
+        median_price = (min_price + max_price) / 2
+        
+        # If the price range is too small, use a minimum difference
+        if max_price - min_price < 5000:
+            # If we're already at a very small range, use an even smaller step
+            step = 1000 if max_price - min_price < 1000 else 2500
+            median_price = min_price + step
+        
+        # Create exactly 2 price ranges for binary subdivision
+        price_ranges = [
+            (min_price, median_price),
+            (median_price, max_price)
+        ]
+        
+        # Create a URL for each price range
+        result = []
+        base_type = property_type.split('_price_')[0] if '_price_' in property_type else property_type
+        
+        for i, (min_p, max_p) in enumerate(price_ranges):
+            # Make sure prices are at least 1 euro apart
+            if max_p - min_p < 1:
+                max_p = min_p + 1
+                
+            # Format prices for URL (avoid commas)
+            min_price_str = str(int(min_p))
+            max_price_str = str(int(max_p))
+            
+            # Create URL with price filter
+            url_params = {
+                "center": f"{rect['center_lon']};{rect['center_lat']}",
+                "zoom": str(rect['zoom']),
+                "propertytypes": ",".join(type_codes),
+                "minmonthyear": period,
+                "maxmonthyear": period,
+                "minprice": min_price_str,
+                "maxprice": max_price_str
+            }
+            
+            query = urllib.parse.urlencode(url_params)
+            url = f"{self.base_generator.base_url}?{query}"
+            
+            # Create descriptive label for this price range
+            range_label = f"{base_type}_price_{min_price_str}_{max_price_str}"
+            
+            # Add to list with incremented subdivision level
+            result.append({
+                "url": url,
+                "rectangle": rect,
+                "property_type": range_label,
+                "period": period,
+                "property_types": property_types,
+                "price_range": f"{min_price_str}-{max_price_str}",
+                "min_price": min_p,
+                "max_price": max_p,
+                "subdivision_level": subdivision_level + 1,  # Increment subdivision level
+                "is_price_subdivision": True
+            })
+        
+        # Detailed log of generated price ranges
+        ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
+        logger.info(f"Level {subdivision_level+1} deep subdivision: {len(result)} URLs by binary price ranges")
+        logger.info(f"Deep price ranges: {', '.join(ranges_str)}")
+        
+        return result
+    
+    def _generate_optimal_price_ranges(
+        self, 
+        properties: List[Dict],
+        num_central_divisions: int = 8
+    ) -> List[Tuple[float, float]]:
         """
         Generates optimal price ranges based on analysis of
         actual data according to the specified logic.
         
         Args:
             properties: List of properties with their prices
+            num_central_divisions: Number of divisions for the central price range
         
         Returns:
             List[Tuple[float, float]]: List of tuples (min_price, max_price)
@@ -334,9 +592,9 @@ class AdaptiveUrlGenerator:
         # Create first range (0 to p05)
         ranges = [(0, p05)]
         
-        # Divide central range (p05 to p95) into 8 intervals
-        central_step = (p95 - p05) / 8
-        for i in range(8):
+        # Divide central range (p05 to p95) into specified number of intervals
+        central_step = (p95 - p05) / num_central_divisions
+        for i in range(num_central_divisions):
             min_price = p05 + i * central_step
             max_price = p05 + (i + 1) * central_step
             ranges.append((min_price, max_price))
@@ -357,14 +615,18 @@ class AdaptiveUrlGenerator:
             List[Tuple[float, float]]: List of tuples (min_price, max_price)
         """
         return [
-            (0, 100000),           # 0-100K
-            (100000, 150000),      # 100K-150K
-            (150000, 200000),      # 150K-200K
-            (200000, 250000),      # 200K-250K
-            (250000, 300000),      # 250K-300K
-            (300000, 400000),      # 300K-400K
+            (0, 80000),            # 0-80K
+            (80000, 120000),       # 80K-120K
+            (120000, 150000),      # 120K-150K
+            (150000, 180000),      # 150K-180K
+            (180000, 220000),      # 180K-220K
+            (220000, 260000),      # 220K-260K
+            (260000, 300000),      # 260K-300K
+            (300000, 350000),      # 300K-350K
+            (350000, 400000),      # 350K-400K
             (400000, 500000),      # 400K-500K
-            (500000, 750000),      # 500K-750K
+            (500000, 600000),      # 500K-600K
+            (600000, 750000),      # 600K-750K
             (750000, 1000000),     # 750K-1M
             (1000000, 25000000)    # 1M+
         ]

@@ -173,3 +173,24 @@ Each step is handled by a dedicated processor, allowing for modular execution an
 ### Models
 
 Data models for the application are defined in `trackimmo/models/data_models.py`.
+
+## Testing
+
+The test suite offers comprehensive coverage of the TrackImmo API:
+
+- **Total Tests**: 50 tests (47 passing, 3 skipped)
+- **Test Categories**: Authentication, input validation, client processing, integration, etc.
+- **Async Support**: Full support for testing asynchronous functions
+- **Database Tests**: Uses a separate test database configuration
+
+To run tests:
+
+```bash
+# Run all tests
+python -m pytest
+
+# Run specific test categories
+python -m pytest tests/test_api/test_client_processor.py
+```
+
+See [TEST_REPORT.md](TEST_REPORT.md) for detailed testing information.
