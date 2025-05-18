@@ -7,6 +7,9 @@ from typing import Dict, Any, Callable, Optional
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 import threading
 import atexit
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from trackimmo.utils.logger import get_logger
 
@@ -88,15 +91,15 @@ def track_time(func_or_name: Optional[Callable] = None, metric_name: Optional[st
             metric_name = func_or_name
         return decorator
 
-class MetricsMiddleware:
+class MetricsMiddleware(BaseHTTPMiddleware):
     """Middleware for tracking API request metrics."""
-    
-    async def __call__(self, request, call_next):
-        """Process a request and record metrics."""
+    def __init__(self, app):
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next):
         ACTIVE_REQUESTS.inc()
         start_time = time.time()
         success = True
-        
         try:
             response = await call_next(request)
             return response

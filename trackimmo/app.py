@@ -3,9 +3,15 @@ Main application module for TrackImmo backend.
 
 This module sets up the FastAPI application.
 """
+import sys
+import asyncio
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from contextlib import asynccontextmanager
 
 from trackimmo.api.routes import router
 from trackimmo.config import settings
@@ -15,9 +21,16 @@ from trackimmo.utils.metrics import MetricsMiddleware, start_metrics_server
 logger = get_logger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting TrackImmo API")
+    start_metrics_server(port=settings.METRICS_PORT if hasattr(settings, 'METRICS_PORT') else 8001)
+    yield
+    logger.info("Shutting down TrackImmo API")
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    # Create FastAPI app
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description="API for TrackImmo - Real estate data scraping and enrichment",
@@ -25,6 +38,7 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
+        lifespan=lifespan
     )
     
     # Configure CORS
@@ -80,20 +94,6 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Run code on application startup."""
-    logger.info("Starting TrackImmo API")
-    # Start metrics server on a separate port
-    start_metrics_server(port=settings.METRICS_PORT if hasattr(settings, 'METRICS_PORT') else 8001)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Run code on application shutdown."""
-    logger.info("Shutting down TrackImmo API")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ This module defines SQLAlchemy models matching the database schema.
 import uuid
 from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Table, DateTime, Date, Text, ARRAY, Enum
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.ext.mutable import MutableList
 from enum import Enum as PyEnum

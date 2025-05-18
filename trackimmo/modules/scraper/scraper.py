@@ -52,47 +52,72 @@ class ImmoDataScraper:
     ) -> str:
         """
         Extracts all properties for a given city.
-        
-        Args:
-            city_name: City name
-            postal_code: Postal code
-            property_types: Property types ["house", "apartment"]
-            start_date: Start date (MM/YYYY)
-            end_date: End date (MM/YYYY)
-            output_file: Output CSV file path
-        
-        Returns:
-            str: Path to the generated CSV file
+        Note: In async contexts (e.g. FastAPI), use the async version directly.
         """
         logger.info(f"Starting scraping for {city_name} ({postal_code})")
-        
         if not property_types:
             property_types = ["house", "apartment"]
-        
-        # Determine output file name
         if not output_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = self.output_dir / f"{city_name}_{postal_code}_{timestamp}.csv"
         else:
             output_file = Path(output_file)
-        
-        # Run scraping asynchronously
-        all_properties = asyncio.run(self._scrape_city_async(
+
+        # Helper to check if we're in an event loop
+        def in_event_loop():
+            try:
+                asyncio.get_running_loop()
+                return True
+            except RuntimeError:
+                return False
+
+        if in_event_loop():
+            raise RuntimeError("scrape_city() cannot be called from an async context. Use await scrape_city_async() instead.")
+        else:
+            all_properties = asyncio.run(self._scrape_city_async(
+                city_name=city_name,
+                postal_code=postal_code,
+                property_types=property_types,
+                start_date=start_date,
+                end_date=end_date
+            ))
+        unique_properties = self._deduplicate_properties(all_properties)
+        logger.info(f"Extraction completed: {len(unique_properties)} unique properties extracted")
+        self._export_to_csv(unique_properties, output_file)
+        logger.info(f"Data exported to {output_file}")
+        return str(output_file)
+
+    async def scrape_city_async(
+        self,
+        city_name: str,
+        postal_code: str,
+        property_types: Optional[List[str]] = None,
+        start_date: str = "01/2014",
+        end_date: str = "06/2024",
+        output_file: Optional[str] = None
+    ) -> str:
+        """
+        Async version for use in async contexts (e.g. FastAPI endpoints).
+        """
+        logger.info(f"Starting scraping for {city_name} ({postal_code}) [async]")
+        if not property_types:
+            property_types = ["house", "apartment"]
+        if not output_file:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = self.output_dir / f"{city_name}_{postal_code}_{timestamp}.csv"
+        else:
+            output_file = Path(output_file)
+        all_properties = await self._scrape_city_async(
             city_name=city_name,
             postal_code=postal_code,
             property_types=property_types,
             start_date=start_date,
             end_date=end_date
-        ))
-        
-        # Deduplicate properties
+        )
         unique_properties = self._deduplicate_properties(all_properties)
-        logger.info(f"Extraction completed: {len(unique_properties)} unique properties extracted")
-        
-        # Export to CSV
+        logger.info(f"Extraction completed: {len(unique_properties)} unique properties extracted [async]")
         self._export_to_csv(unique_properties, output_file)
-        logger.info(f"Data exported to {output_file}")
-        
+        logger.info(f"Data exported to {output_file} [async]")
         return str(output_file)
     
     async def _scrape_city_async(

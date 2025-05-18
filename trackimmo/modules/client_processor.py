@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 async def process_client_data(client_id: str) -> Dict[str, Any]:
     """
     Process a client's data and assign new properties.
+    Logs a job in processing_jobs for every attempt.
     
     Args:
         client_id: The client's UUID
@@ -25,36 +26,67 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         Dict with results of processing
     """
     logger.info(f"Processing client {client_id}")
-    
-    # 1. Get client data
-    client = get_client_by_id(client_id)
-    if not client or client["status"] != "active":
-        raise ValueError(f"Client {client_id} not found or inactive")
-    
-    # 2. Process cities (enrich if needed)
-    await update_client_cities(client)
-    
-    # 3. Scrape and extract properties
-    await scrape_properties_for_client(client)
-    
-    # 4. Assign properties to client
-    assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
-    new_addresses = assign_properties_to_client(client, assign_count)
-    
-    # 5. Send notification
-    if new_addresses:
-        send_client_notification(client, new_addresses)
+    now = datetime.now()
+    job_id = str(uuid.uuid4())
+    try:
+        with DBManager() as db:
+            # Insert job as 'processing'
+            db.get_client().table("processing_jobs").insert({
+                "job_id": job_id,
+                "client_id": client_id,
+                "status": "processing",
+                "attempt_count": 1,
+                "last_attempt": now.isoformat(),
+                "next_attempt": (now + timedelta(hours=1)).isoformat(),
+                "error_message": None,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
+            }).execute()
+        # 1. Get client data
+        client = get_client_by_id(client_id)
+        if not client or client["status"] != "active":
+            raise ValueError(f"Client {client_id} not found or inactive")
         
-    # 6. Update client's last_updated field
-    update_client_last_updated(client_id)
-    
-    logger.info(f"Processed client {client_id}: {len(new_addresses)} properties assigned")
-    
-    return {
-        "success": True,
-        "properties_assigned": len(new_addresses),
-        "client_id": client_id
-    }
+        # 2. Process cities (enrich if needed)
+        await update_client_cities(client)
+        
+        # 3. Scrape and extract properties
+        await scrape_properties_for_client(client)
+        
+        # 4. Assign properties to client
+        assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
+        new_addresses = assign_properties_to_client(client, assign_count)
+        
+        # 5. Send notification
+        if new_addresses:
+            send_client_notification(client, new_addresses)
+        
+        # 6. Update client's last_updated field
+        update_client_last_updated(client_id)
+        
+        logger.info(f"Processed client {client_id}: {len(new_addresses)} properties assigned")
+        
+        # Mark job as completed
+        with DBManager() as db:
+            db.get_client().table("processing_jobs").update({
+                "status": "completed",
+                "updated_at": datetime.now().isoformat()
+            }).eq("job_id", job_id).execute()
+        return {
+            "success": True,
+            "properties_assigned": len(new_addresses),
+            "client_id": client_id
+        }
+    except Exception as e:
+        logger.error(f"Error processing client {client_id}: {str(e)}")
+        # Mark job as failed
+        with DBManager() as db:
+            db.get_client().table("processing_jobs").update({
+                "status": "failed",
+                "error_message": str(e),
+                "updated_at": datetime.now().isoformat()
+            }).eq("job_id", job_id).execute()
+        raise
 
 def get_client_by_id(client_id: str) -> Optional[Dict[str, Any]]:
     """Get a client by ID."""
@@ -143,24 +175,20 @@ async def scrape_properties_for_client(client: Dict[str, Any]):
         for city in response.data:
             try:
                 logger.info(f"Scraping properties for city {city['name']} ({city['city_id']})")
-                
                 # Initialize scraper
                 scraper = ImmoDataScraper()
-                
                 # Set date range for past 3 months
                 today = datetime.now()
                 start_date = (today - timedelta(days=90)).strftime("%m/%Y")
                 end_date = today.strftime("%m/%Y")
-                
-                # Scrape properties
-                result_file = scraper.scrape_city(
+                # Scrape properties (async)
+                result_file = await scraper.scrape_city_async(
                     city_name=city["name"],
                     postal_code=city["postal_code"],
                     property_types=client["property_type_preferences"],
                     start_date=start_date,
                     end_date=end_date
                 )
-                
                 logger.info(f"Scraped properties for {city['name']} saved to {result_file}")
             except Exception as e:
                 logger.error(f"Error scraping properties for city {city['city_id']}: {str(e)}")

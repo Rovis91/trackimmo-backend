@@ -110,15 +110,12 @@ async def _process_retry_queue():
             if job["attempt_count"] >= 3:
                 from trackimmo.utils.email_sender import send_error_notification
                 send_error_notification(job["client_id"], job["error_message"])
-                
                 db.get_client().table("processing_jobs").update({
                     "status": "failed",
                     "updated_at": now.isoformat()
                 }).eq("job_id", job["job_id"]).execute()
-                
                 failed += 1
                 continue
-            
             # Try processing
             try:
                 # Mark as processing
@@ -126,33 +123,41 @@ async def _process_retry_queue():
                     "status": "processing",
                     "updated_at": now.isoformat()
                 }).eq("job_id", job["job_id"]).execute()
-                
                 # Process client
                 await process_client_data(job["client_id"])
-                
                 # Mark as completed
                 db.get_client().table("processing_jobs").update({
                     "status": "completed",
                     "updated_at": now.isoformat()
                 }).eq("job_id", job["job_id"]).execute()
-                
                 processed += 1
-                
             except Exception as e:
-                # Calculate next retry with exponential backoff
+                # If the error is permanent (e.g., client not found or inactive), mark as failed
+                error_str = str(e)
+                permanent_error = (
+                    "not found or inactive" in error_str.lower() or
+                    "missing required" in error_str.lower()
+                )
                 attempt = job["attempt_count"] + 1
                 next_attempt = now + timedelta(hours=2**attempt)  # Exponential backoff
-                
-                # Update job
-                db.get_client().table("processing_jobs").update({
-                    "status": "pending",
-                    "attempt_count": attempt,
-                    "last_attempt": now.isoformat(),
-                    "next_attempt": next_attempt.isoformat(),
-                    "error_message": str(e),
-                    "updated_at": now.isoformat()
-                }).eq("job_id", job["job_id"]).execute()
-                
-                failed += 1
-    
+                if attempt >= 3 or permanent_error:
+                    db.get_client().table("processing_jobs").update({
+                        "status": "failed",
+                        "attempt_count": attempt,
+                        "last_attempt": now.isoformat(),
+                        "next_attempt": next_attempt.isoformat(),
+                        "error_message": error_str,
+                        "updated_at": now.isoformat()
+                    }).eq("job_id", job["job_id"]).execute()
+                    failed += 1
+                else:
+                    db.get_client().table("processing_jobs").update({
+                        "status": "pending",
+                        "attempt_count": attempt,
+                        "last_attempt": now.isoformat(),
+                        "next_attempt": next_attempt.isoformat(),
+                        "error_message": error_str,
+                        "updated_at": now.isoformat()
+                    }).eq("job_id", job["job_id"]).execute()
+                    failed += 1
     return processed, failed
