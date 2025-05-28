@@ -256,12 +256,169 @@ async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -
 
 async def update_client_last_updated(client_id: str):
     """Update the client's last_updated timestamp."""
-    now = datetime.now().isoformat()
-    
     with DBManager() as db:
         db.get_client().table("clients").update({
-            "last_updated": now,
-            "updated_at": now
+            "updated_at": datetime.now().isoformat()
         }).eq("client_id", client_id).execute()
+
+
+def filter_properties_by_preferences(properties: List[Dict[str, Any]], client_preferences: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Filter properties based on client preferences.
+    
+    Args:
+        properties: List of property data
+        client_preferences: Client preferences including property_type_preferences and chosen_cities
         
-    logger.info(f"Updated last_updated timestamp for client {client_id}")
+    Returns:
+        Filtered list of properties
+    """
+    filtered = []
+    
+    property_types = client_preferences.get('property_type_preferences', [])
+    chosen_cities = client_preferences.get('chosen_cities', [])
+    
+    for prop in properties:
+        # Filter by property type
+        if property_types and prop.get('property_type') not in property_types:
+            continue
+            
+        # Filter by city (using INSEE code)
+        if chosen_cities and prop.get('insee_code') not in chosen_cities:
+            continue
+            
+        filtered.append(prop)
+    
+    return filtered
+
+
+def limit_and_sort_properties(properties: List[Dict[str, Any]], limit: int = 10, sort_by: str = 'price', sort_order: str = 'desc') -> List[Dict[str, Any]]:
+    """
+    Sort and limit properties.
+    
+    Args:
+        properties: List of property data
+        limit: Maximum number of properties to return
+        sort_by: Field to sort by
+        sort_order: 'asc' or 'desc'
+        
+    Returns:
+        Sorted and limited list of properties
+    """
+    # Sort properties
+    reverse = sort_order.lower() == 'desc'
+    
+    try:
+        if sort_by == 'price':
+            sorted_properties = sorted(properties, key=lambda x: float(x.get('price', 0)), reverse=reverse)
+        elif sort_by == 'sale_date':
+            sorted_properties = sorted(properties, key=lambda x: x.get('sale_date', ''), reverse=reverse)
+        else:
+            sorted_properties = sorted(properties, key=lambda x: x.get(sort_by, ''), reverse=reverse)
+    except (ValueError, TypeError):
+        # If sorting fails, return original list
+        sorted_properties = properties
+    
+    # Limit results
+    return sorted_properties[:limit]
+
+
+def deduplicate_properties(properties: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Remove duplicate properties based on address.
+    
+    Args:
+        properties: List of property data
+        
+    Returns:
+        Deduplicated list of properties
+    """
+    seen_addresses = {}
+    deduplicated = []
+    
+    for prop in properties:
+        address_key = prop.get('address_raw', '').lower().strip()
+        city_key = prop.get('city_name', '').lower().strip()
+        combined_key = f"{address_key}_{city_key}"
+        
+        if combined_key not in seen_addresses:
+            seen_addresses[combined_key] = prop
+            deduplicated.append(prop)
+        else:
+            # Keep the property with the more recent sale date or higher price
+            existing = seen_addresses[combined_key]
+            current_date = prop.get('sale_date', '')
+            existing_date = existing.get('sale_date', '')
+            
+            # If current property has a more recent date, replace
+            if current_date > existing_date:
+                # Remove old property and add new one
+                deduplicated = [p for p in deduplicated if p != existing]
+                seen_addresses[combined_key] = prop
+                deduplicated.append(prop)
+            elif current_date == existing_date:
+                # If same date, keep the one with higher price
+                current_price = float(prop.get('price', 0))
+                existing_price = float(existing.get('price', 0))
+                if current_price > existing_price:
+                    deduplicated = [p for p in deduplicated if p != existing]
+                    seen_addresses[combined_key] = prop
+                    deduplicated.append(prop)
+    
+    return deduplicated
+
+
+def prepare_client_notification_data(client: Dict[str, Any], properties: List[Dict[str, Any]], report_date: datetime) -> Dict[str, Any]:
+    """
+    Prepare data for client notification.
+    
+    Args:
+        client: Client data
+        properties: List of properties for the client
+        report_date: Date of the report
+        
+    Returns:
+        Notification data dictionary
+    """
+    # Calculate summary statistics
+    total_properties = len(properties)
+    
+    property_types = {}
+    prices = []
+    
+    for prop in properties:
+        prop_type = prop.get('property_type', 'unknown')
+        property_types[prop_type] = property_types.get(prop_type, 0) + 1
+        
+        price = prop.get('price')
+        if price:
+            try:
+                prices.append(float(price))
+            except (ValueError, TypeError):
+                pass
+    
+    price_range = {}
+    if prices:
+        price_range = {
+            'min': min(prices),
+            'max': max(prices),
+            'avg': sum(prices) / len(prices)
+        }
+    
+    summary = {
+        'total_properties': total_properties,
+        'property_types': property_types,
+        'price_range': price_range
+    }
+    
+    return {
+        'client': {
+            'first_name': client.get('first_name'),
+            'last_name': client.get('last_name'),
+            'email': client.get('email'),
+            'subscription_type': client.get('subscription_type')
+        },
+        'properties': properties,
+        'report_date': report_date.isoformat(),
+        'summary': summary
+    }

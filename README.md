@@ -1,196 +1,277 @@
 # TrackImmo Backend
 
-Backend service for TrackImmo, a real estate data scraping and enrichment application.
+A comprehensive real estate data processing system that scrapes, enriches, and analyzes French property transaction data. The system consists of three main modules that work together to provide complete property market intelligence.
 
-## Features
+## System Overview
 
-- **Data Scraping**:
-  - Automated extraction of real estate transaction data using Playwright
-  - City data collection including INSEE codes and property market prices
-- **Data Enrichment**:
-  - Geocoding of addresses using the French government API
-  - DPE (energy performance) data integration from official sources
-  - Price estimation algorithm based on market trends
-- **REST API**: Comprehensive FastAPI endpoints with JWT authentication
-- **Monitoring**: Built-in metrics and logging for application performance
-- **Export Utilities**: CSV export for processed data
+TrackImmo Backend is designed around a modular architecture with three core processing modules:
 
-## Installation
+1. **Scraper Module**: Extracts property transaction data from ImmoData
+2. **City Scraper Module**: Collects city information and market prices
+3. **Enrichment Module**: Processes and enhances raw data through a 6-stage pipeline
 
-### Prerequisites
+## Core Modules
 
-- Python 3.10+
-- Supabase account for database operations
-- Playwright browsers
+### 1. Scraper Module
 
-### Setup
+The scraper module extracts real estate property data by dividing cities into geographic rectangles and implementing adaptive subdivision strategies to handle API limitations.
 
-1. Clone the repository
-   ```
-   git clone https://github.com/yourusername/trackimmo-backend.git
-   cd trackimmo-backend
-   ```
+**Key Features**:
 
-2. Create and activate a virtual environment
-   ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+- Geographic division of cities into 17km × 14km rectangles with 10% overlap
+- Adaptive subdivision when hitting the 101-property API limit
+- Browser automation using Playwright for JavaScript-heavy pages
+- Automatic deduplication and CSV export
 
-3. Install dependencies
-   ```
-   pip install -r requirements.txt
-   ```
+**Usage**:
 
-4. Install Playwright browsers
-   ```
-   playwright install --with-deps
-   ```
+```python
+from trackimmo.modules.scraper import ImmoDataScraper
 
-5. Create a `.env` file from the example
-   ```
-   cp .env.example .env
-   ```
-   
-6. Update the `.env` file with your specific settings, including Supabase credentials:
-   ```
-   SUPABASE_URL=https://your-project-url.supabase.co
-   SUPABASE_KEY=your-supabase-api-key
-   ```
-
-## Supabase Integration
-
-This project uses Supabase as the database backend. To setup:
-
-1. Create a Supabase account at [supabase.com](https://supabase.com)
-2. Create a new project
-3. Get your project URL and API key from the project settings
-4. Add these credentials to your `.env` file as described above
-
-The database schema follows the SQLAlchemy models defined in `trackimmo/models/db_models.py`. Make sure your Supabase database has the same tables and columns as defined in these models.
-
-## Configuration
-
-The application uses environment variables for configuration. See [config.py](trackimmo/config.py) for all available options.
-
-Key settings include:
-- `SUPABASE_URL`: URL for your Supabase project
-- `SUPABASE_KEY`: API key for Supabase authentication
-- `SECRET_KEY`: Secret key for JWT token generation
-- `SCRAPER_HEADLESS`: Whether to run browser in headless mode
-- `METRICS_PORT`: Port for the metrics server
-
-## Running the application
-
-### Development mode
-
-```
-uvicorn trackimmo.app:app --reload
+scraper = ImmoDataScraper(output_dir="data/scraped")
+result_file = scraper.scrape_city(
+    city_name="Lyon",
+    postal_code="69001",
+    property_types=["house", "apartment"],
+    start_date="01/2023",
+    end_date="12/2023"
+)
 ```
 
-The API will be available at http://localhost:8000, with documentation at http://localhost:8000/docs.
+**Output**: CSV file with property data including address, price, surface, rooms, sale date, and property type.
 
-### Production mode
+### 2. City Scraper Module
 
+Collects comprehensive city information including INSEE codes, department/region data, and current market prices.
+
+**Key Features**:
+
+- Automatic INSEE code resolution via French geocoding API
+- Market price extraction for houses and apartments
+- Database integration with UPSERT operations
+- Batch processing capabilities
+
+**Usage**:
+
+```python
+from trackimmo.modules.city_scraper import scrape_cities, CityDatabaseOperations
+
+cities = [
+    {"city_name": "Paris", "postal_code": "75001"},
+    {"city_name": "Lyon", "postal_code": "69001"}
+]
+
+scraped_data = await scrape_cities(cities)
+db_ops = CityDatabaseOperations()
+results = db_ops.update_cities(scraped_data)
 ```
-uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
-```
 
-## Project Structure
+**Output**: Enriched city data with INSEE codes, department, region, and average property prices per m².
 
-- `trackimmo/`: Main package
-  - `api/`: API routes and authentication
-    - `auth.py`: JWT authentication
-    - `routes.py`: API endpoints
-  - `models/`: Data models
-    - `data_models.py`: Pydantic models
-    - `db_models.py`: SQLAlchemy models
-  - `modules/`: Core functionality
-    - `scraper/`: Web scraping module for property data
-    - `city_scraper/`: City data collection module
-      - `city_scraper.py`: City data extraction
-      - `db_operations.py`: City database operations
-    - `enrichment/`: Data enrichment pipeline
-      - `data_normalizer.py`: Data cleaning and normalization
-      - `city_resolver.py`: City code resolution
-      - `geocoding_service.py`: Address geocoding
-      - `dpe_enrichment.py`: Energy performance data integration
-      - `price_estimator.py`: Property price estimation
-      - `db_integrator.py`: Database integration
-    - `db_manager.py`: Database operations (Supabase integration)
-  - `utils/`: Utility functions
-    - `logger.py`: Logging configuration
-    - `metrics.py`: Performance metrics
-    - `export.py`: CSV export utilities
-  - `tests/`: Test suite
-  - `app.py`: Application entry point
-  - `config.py`: Configuration loader
+### 3. Enrichment Module
 
-## Documentation
+A 6-stage data processing pipeline that transforms raw property data into enriched, analysis-ready information.
 
-- `API_DOCS.md`: API endpoints and usage
-- `DB_SCHEMA.md`: Database schema
-- `trackimmo/modules/enrichment/enrichment_doc.md`: Enrichment module documentation
-- `trackimmo/modules/city_scraper/city_scraper_doc.md`: City scraper module documentation
-
-## Modules
-
-### Scraper Module
-
-The scraper module handles the extraction of property data from ImmoData. It includes:
-
-- `ImmoDataScraper`: Main scraper class
-- `BrowserManager`: Manages browser automation using Playwright
-- `URLGenerator`: Creates URLs for scraping
-- `GeoDivider`: Divides geographic areas into smaller regions
-
-### City Scraper Module
-
-The city scraper module collects data about French cities including INSEE codes, postal codes, departments, and average property prices. It includes:
-
-- `CityDataScraper`: Main scraper class for city data
-- `CityDatabaseOperations`: Database operations for city data
-
-This module enhances the application by providing up-to-date city information and market prices for better analysis and enrichment of property data.
-
-### Enrichment Module
-
-The enrichment module processes raw property data through a pipeline of steps to clean, enhance, and normalize it. The process includes:
+**Processing Stages**:
 
 1. **Data Normalization**: Cleans and standardizes raw data
 2. **City Resolution**: Maps city names to postal and INSEE codes
-3. **Geocoding**: Adds geographical coordinates to property addresses
-4. **DPE Enrichment**: Adds energy performance data from official sources
+3. **Geocoding**: Adds geographical coordinates using French address API
+4. **DPE Enrichment**: Integrates energy performance data from ADEME APIs
 5. **Price Estimation**: Calculates current market values based on historical data
-6. **Database Integration**: Stores processed data in the database
+6. **Database Integration**: Stores processed data in Supabase
 
-Each step is handled by a dedicated processor, allowing for modular execution and easy maintenance.
+**Usage**:
 
-### API Module
+```python
+from trackimmo.modules.enrichment import EnrichmentOrchestrator
 
-(To be implemented)
+config = {
+    'data_dir': 'data',
+    'original_bbox': {
+        'min_lat': 48.8, 'max_lat': 48.9,
+        'min_lon': 2.3, 'max_lon': 2.4
+    }
+}
 
-### Models
-
-Data models for the application are defined in `trackimmo/models/data_models.py`.
-
-## Testing
-
-The test suite offers comprehensive coverage of the TrackImmo API:
-
-- **Total Tests**: 50 tests (47 passing, 3 skipped)
-- **Test Categories**: Authentication, input validation, client processing, integration, etc.
-- **Async Support**: Full support for testing asynchronous functions
-- **Database Tests**: Uses a separate test database configuration
-
-To run tests:
-
-```bash
-# Run all tests
-python -m pytest
-
-# Run specific test categories
-python -m pytest tests/test_api/test_client_processor.py
+orchestrator = EnrichmentOrchestrator(config)
+success = orchestrator.run(
+    input_file='properties.csv',
+    start_stage=1,
+    end_stage=6,
+    debug=True
+)
 ```
 
-See [TEST_REPORT.md](TEST_REPORT.md) for detailed testing information.
+## Data Flow Architecture
+
+### Complete Processing Pipeline
+
+```
+Raw Property Data → Scraper Module → CSV Export
+                                        ↓
+City Information ← City Scraper ← Database Integration
+                                        ↓
+Enriched Data ← Enrichment Pipeline ← Normalized Data
+```
+
+### Typical Workflow
+
+1. **Data Collection**: Use scraper module to extract property transactions for target cities
+2. **City Enhancement**: Run city scraper to collect market context and administrative data
+3. **Data Enrichment**: Process raw data through the enrichment pipeline
+4. **Analysis Ready**: Final data includes coordinates, energy ratings, price estimates, and market context
+
+## Key Configuration
+
+### Geographic Parameters
+
+- Rectangle size: 17km × 14km with 10% overlap
+- Zoom level: 12 for optimal coverage
+- Subdivision threshold: 95 properties (near API limit)
+
+### API Integration
+
+- French Geocoding API for address resolution
+- ADEME APIs for energy performance data
+- ImmoData for property transactions and market prices
+
+### Data Processing Limits
+
+- Geocoding: 5000 addresses per batch
+- DPE enrichment: 9000 results per API call
+- Database operations: 100 properties per batch
+
+## Performance Characteristics
+
+### Processing Times
+
+- **Per property search**: 5-10 seconds
+- **Medium city (50k properties)**: 15-30 minutes
+- **Large city (Paris)**: 1-2 hours
+- **Enrichment pipeline**: 10-20 minutes per 1000 properties
+
+### Resource Requirements
+
+- **Memory**: 500MB-1GB during execution
+- **Storage**: ~1MB per 1000 properties
+- **Network**: Moderate usage for API calls
+
+## Output Formats
+
+### Scraper Output
+
+```csv
+address,city,price,surface,rooms,sale_date,property_type,property_url
+```
+
+### City Scraper Output
+
+```python
+{
+    "name": "Lyon",
+    "postal_code": "69001",
+    "insee_code": "69123",
+    "department": "Rhône",
+    "region": "Auvergne-Rhône-Alpes",
+    "house_price_avg": 4500,
+    "apartment_price_avg": 3200,
+    "last_scraped": "2024-01-15T10:30:00Z"
+}
+```
+
+### Enrichment Output
+
+Final enriched data includes all original fields plus:
+
+- Geographic coordinates (latitude, longitude)
+- Energy performance ratings (DPE class, GES class)
+- Estimated current market value
+- Administrative codes (INSEE, postal, department)
+
+## Error Handling and Reliability
+
+### Robust Processing
+
+- Automatic retries for network failures (max 3 attempts)
+- Graceful handling of missing data
+- Comprehensive logging for debugging
+- Fault-tolerant pipeline design
+
+### Data Quality
+
+- Address similarity matching (70% threshold)
+- Geographic proximity validation (20m radius)
+- Confidence scoring for all enrichments
+- Duplicate detection and removal
+
+## Project Structure
+
+```
+trackimmo/
+├── modules/
+│   ├── scraper/           # Property data extraction
+│   ├── city_scraper/      # City information collection
+│   └── enrichment/        # Data processing pipeline
+├── models/                # Data models and schemas
+├── utils/                 # Logging, metrics, export utilities
+└── config.py             # Configuration management
+```
+
+## Dependencies
+
+### Core Libraries
+
+- **playwright**: Browser automation for scraping
+- **pandas**: Data manipulation and analysis
+- **requests**: HTTP API interactions
+- **asyncio**: Asynchronous processing
+
+### Database Integration
+
+- **supabase**: Database operations and storage
+- **postgis**: Geographic data handling
+
+### Data Processing
+
+- **beautifulsoup4**: HTML parsing
+- **unicodedata**: Text normalization
+- **difflib**: Text similarity matching
+
+## Usage Patterns
+
+### Single City Analysis
+
+```python
+# Extract data for one city
+scraper = ImmoDataScraper()
+properties = scraper.scrape_city("Lyon", "69001", ["house"], "01/2023", "12/2023")
+
+# Enrich the data
+orchestrator = EnrichmentOrchestrator(config)
+orchestrator.run(properties, start_stage=1, end_stage=6)
+```
+
+### Batch Processing
+
+```python
+# Process multiple cities
+cities = [{"city_name": "Lyon", "postal_code": "69001"}, ...]
+for city in cities:
+    properties = scraper.scrape_city(**city, property_types=["house", "apartment"])
+    orchestrator.run(properties)
+```
+
+### Partial Pipeline Execution
+
+```python
+# Run only specific enrichment stages
+orchestrator.run(
+    input_file="raw_data.csv",
+    start_stage=3,  # Start from geocoding
+    end_stage=5,    # End at price estimation
+    debug=True      # Keep intermediate files
+)
+```
+
+This system provides a complete solution for French real estate market analysis, from raw data extraction to enriched, analysis-ready datasets.

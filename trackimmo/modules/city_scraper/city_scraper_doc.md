@@ -1,162 +1,199 @@
-# Documentation du Module de Scraping des Villes
+# City Scraper Module Documentation
 
-Ce module est responsable de la collecte automatisée des données sur les villes françaises, incluant les codes INSEE, les codes postaux, les départements et les prix moyens immobiliers.
+## Overview
 
-## Structure générale
+The City Scraper module is responsible for extracting city information and average property prices from French municipalities. It enriches the TrackImmo database with INSEE codes, department/region data, and current real estate market prices for houses and apartments.
 
-Le module city_scraper est organisé selon l'architecture suivante:
+## Main Components
 
-```
-trackimmo/
-└── modules/
-    └── city_scraper/
-        ├── __init__.py                # Exports des classes et fonctions principales
-        ├── city_scraper.py            # Classe principale de scraping
-        └── db_operations.py           # Opérations de base de données
-```
+### 1. CityDataScraper
 
-## Fonctionnalités principales
+**Purpose**: Scrapes city data including INSEE codes and average property prices from ImmoData.
 
-Le module permet de:
+### 2. CityDatabaseOperations
 
-1. **Récupérer les codes INSEE** pour les villes françaises
-2. **Extraire les prix immobiliers moyens** (maisons et appartements) à partir de sources web
-3. **Enrichir la base de données** avec ces informations
-4. **Automatiser le processus** de mise à jour des données des villes
+**Purpose**: Handles database operations for storing and updating city information in Supabase.
 
-## CityDataScraper (city_scraper.py)
+### 3. scrape_cities (function)
 
-Cette classe est responsable de l'extraction des données des villes à partir de différentes sources.
+**Purpose**: Batch processing function for scraping multiple cities.
 
-### Méthodes principales
+## Key Functions
 
-#### `scrape_city(city_name, postal_code, insee_code=None)`
+### CityDataScraper Class
 
-```python
-async def scrape_city(self, city_name: str, postal_code: str, insee_code: Optional[str] = None) -> Dict[str, Any]:
-```
+#### `__init__(max_retries: int = 3, sleep_time: float = 1.0)`
 
-Cette méthode extrait les données d'une ville spécifique:
-- Récupère le code INSEE si non fourni
-- Extrait les informations de département et région
-- Scrape les prix immobiliers moyens des sites spécialisés
+Initializes the scraper with retry logic and rate limiting.
 
-#### `_get_geocoding_data(city_name, postal_code)`
+**Parameters:**
 
-```python
-def _get_geocoding_data(self, city_name: str, postal_code: str) -> Optional[Dict[str, str]]:
-```
+- `max_retries`: Maximum retry attempts for failed requests
+- `sleep_time`: Delay between requests in seconds
 
-Utilise l'API de géocodage française pour obtenir:
-- Code INSEE
-- Code postal normalisé
-- Département
-- Région
+#### `async scrape_city(city_name: str, postal_code: str, insee_code: Optional[str] = None) -> Dict[str, Any]`
 
-#### `_scrape_prices(url)`
+Main method that orchestrates the city data extraction process.
+
+**Input:**
+
+- `city_name`: Name of the city
+- `postal_code`: 5-digit postal code
+- `insee_code`: Optional INSEE code (will be fetched if not provided)
+
+**Output:**
 
 ```python
-async def _scrape_prices(self, url: str) -> Dict[str, Optional[int]]:
+{
+    "name": str,
+    "postal_code": str,
+    "insee_code": str,
+    "department": str,
+    "region": str,
+    "house_price_avg": int,      # Average price per m² for houses
+    "apartment_price_avg": int,   # Average price per m² for apartments
+    "last_scraped": str,         # Timestamp
+    "status": str,               # "success" or "error"
+    "error_message": str         # Error details if any
+}
 ```
 
-Extrait les prix immobiliers moyens:
-- Prix moyen des maisons (€/m²)
-- Prix moyen des appartements (€/m²)
+### CityDatabaseOperations Class
 
-### Fonction de façade
+#### `update_cities(cities_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]`
 
-```python
-async def scrape_cities(cities_data, max_retries=3, sleep_time=1.0):
-```
+Batch updates multiple cities in the database.
 
-Cette fonction facilite le scraping de plusieurs villes:
-- Traite une liste de villes en parallèle
-- Gère automatiquement la limitation de débit
-- Retourne les résultats compilés
+**Input:**
 
-## CityDatabaseOperations (db_operations.py)
+- `cities_data`: List of city data dictionaries
 
-Cette classe gère les opérations de base de données pour les villes.
+**Output:**
 
-### Méthodes principales
+- List of city data with added status information and city_id
 
-#### `update_cities(cities_data)`
+#### `update_city(city_data: Dict[str, Any]) -> Dict[str, Any]`
 
-```python
-def update_cities(self, cities_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-```
+Updates or inserts a single city in the database using UPSERT operation.
 
-Met à jour plusieurs villes en base de données:
-- Traite un lot de villes en une seule opération
-- Capture et journalise les erreurs
-- Retourne les résultats avec statut de succès/échec
+**Input:**
 
-#### `update_city(city_data)`
+- `city_data`: Single city data dictionary
 
-```python
-def update_city(self, city_data: Dict[str, Any]) -> Dict[str, Any]:
-```
+**Output:**
 
-Met à jour une ville individuelle:
-- Vérifie l'existence de la ville par code INSEE
-- Effectue une opération UPSERT (insert ou update)
-- Met à jour les prix moyens si disponibles
+- Updated city data with city_id and operation status
 
-## Exemple d'utilisation
+### Utility Function
 
-### Scraping d'une ville individuelle
+#### `async scrape_cities(cities_data, max_retries=3, sleep_time=1.0) -> List[Dict[str, Any]]`
 
-```python
-import asyncio
-from trackimmo.modules.city_scraper import CityDataScraper
+Convenience function for scraping multiple cities sequentially.
 
-async def scrape_single_city():
-    scraper = CityDataScraper()
-    city_data = await scraper.scrape_city("Paris", "75001")
-    print(city_data)
+**Input:**
 
-asyncio.run(scrape_single_city())
-```
+- `cities_data`: List of dicts containing `city_name`, `postal_code`, and optional `insee_code`
+- `max_retries`: Maximum retry attempts
+- `sleep_time`: Delay between cities
 
-### Scraping et mise à jour de plusieurs villes
+**Output:**
+
+- List of scraped city data dictionaries
+
+## How It Works
+
+### 1. Data Collection Flow
+
+1. Receive city name and postal code
+2. Query French Geocoding API to get INSEE code, department, and region
+3. Generate ImmoData market URL using slugified names
+4. Scrape average prices using Playwright browser automation
+5. Return enriched city data
+
+### 2. URL Generation Process
+
+- City names are slugified (accents removed, spaces replaced with hyphens)
+- Department codes are mapped to department names
+- Region is determined from department code
+- Final URL format: `https://www.immo-data.fr/marche-immobilier/{region}/{department}/{city}-{insee_code}/`
+
+### 3. Price Extraction
+
+- Uses Playwright to render JavaScript-heavy pages
+- Extracts prices via DOM queries for "Appartements - Prix" and "Maisons - Prix" sections
+- Parses and cleans price strings to integers
+
+### 4. Database Operations
+
+- Uses UPSERT to handle both new cities and updates
+- INSEE code serves as the unique identifier
+- Automatically timestamps last_scraped field
+
+## Important Variables and Mappings
+
+### Department Mapping
+
+- Maps 95 French department codes to URL-friendly names
+- Special handling for Corsica (2A, 2B)
+- Includes overseas territories
+
+### Region Mapping
+
+- Maps department codes to 13 metropolitan regions + 5 overseas
+- Based on 2022 French administrative divisions
+
+### API Endpoints
+
+- Geocoding API: `https://api-adresse.data.gouv.fr/search/`
+- ImmoData base URL: `https://www.immo-data.fr/marche-immobilier/`
+
+## Error Handling
+
+The module implements comprehensive error handling:
+
+- Network failures trigger retries up to max_retries
+- Missing INSEE codes are logged and marked as errors
+- Failed price extractions don't block city data updates
+- All errors are captured in the returned data structure
+
+## Usage Example
 
 ```python
 import asyncio
 from trackimmo.modules.city_scraper import scrape_cities, CityDatabaseOperations
 
-async def update_multiple_cities():
-    # Préparer les données des villes
-    cities_to_scrape = [
-        {"name": "Paris", "postal_code": "75001"},
-        {"name": "Lyon", "postal_code": "69001"},
-        {"name": "Marseille", "postal_code": "13001"}
-    ]
-    
-    # Scraper les données
-    scraped_cities = await scrape_cities(cities_to_scrape)
-    
-    # Mettre à jour la base de données
-    db_ops = CityDatabaseOperations()
-    results = db_ops.update_cities(scraped_cities)
-    
-    # Afficher les résultats
-    for city in results:
-        print(f"{city['name']}: {city['status']}")
+# Prepare cities to scrape
+cities = [
+    {"city_name": "Paris", "postal_code": "75001"},
+    {"city_name": "Lyon", "postal_code": "69001"},
+    {"city_name": "Marseille", "postal_code": "13001"}
+]
 
-asyncio.run(update_multiple_cities())
+# Scrape cities
+scraped_data = asyncio.run(scrape_cities(cities))
+
+# Update database
+db_ops = CityDatabaseOperations()
+results = db_ops.update_cities(scraped_data)
+
+# Check results
+for city in results:
+    if city["status"] == "success":
+        print(f"{city['name']}: House avg {city['house_price_avg']}€/m²")
 ```
 
-## Dépendances
+## Dependencies
 
-Le module requiert les packages suivants:
-- `playwright` pour l'automation du navigateur
-- `beautifulsoup4` pour le parsing HTML
-- `requests` pour les requêtes HTTP
-- `asyncio` pour les opérations asynchrones
+- **playwright**: Browser automation for scraping
+- **beautifulsoup4**: HTML parsing (imported but not used in current implementation)
+- **requests**: HTTP requests for geocoding API
+- **asyncio**: Asynchronous operations
+- **unicodedata**: Text normalization for URL generation
 
-## Notes d'implémentation
+## Notes
 
-- **Géocodage**: Utilisation de l'API officielle française pour des données précises
-- **Limitation de débit**: Mécanismes intégrés pour respecter les limites des sites sources
-- **Robustesse**: Gestion des erreurs et mécanismes de retry pour une meilleure fiabilité
-- **Asynchrone**: Utilisation de async/await pour un traitement efficace de multiples villes 
+- The scraper respects rate limits with configurable sleep times
+- INSEE codes are immutable once set (used as unique identifiers)
+- Price data may be None if not available on ImmoData
+- The module handles both creating new cities and updating existing ones
+- All timestamps use database server time via "now()" function

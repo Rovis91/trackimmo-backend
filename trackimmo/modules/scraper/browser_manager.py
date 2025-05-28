@@ -29,7 +29,21 @@ class BrowserManager:
         "rooms": "svg.fa-objects-column + span.font-semibold",
         "surface": "svg.fa-ruler-combined + span.font-semibold",
         "date": "time",
-        "details_url": "a.whitespace-nowrap.border.bg-primary-500",
+        "details_url": "a.whitespace-nowrap.border.bg-primary-500"
+    }
+    
+    # Property type mapping from French to English
+    PROPERTY_TYPE_MAPPING = {
+        'maison': 'house',
+        'maisons': 'house',
+        'appartement': 'apartment',
+        'appartements': 'apartment',
+        'terrain': 'land',
+        'terrains': 'land',
+        'local commercial': 'commercial',
+        'locaux commerciaux': 'commercial',
+        'autre': 'other',
+        'autres': 'other'
     }
     
     def __init__(self, max_retries: int = 3, sleep_time: float = 1.0):
@@ -181,7 +195,9 @@ class BrowserManager:
                     # Extract property type from HTML, not from URL data
                     type_tag = element.find('p', class_='flex items-center text-sm text-gray-400')
                     if type_tag and type_tag.span:
-                        property_type = type_tag.span.text.strip()
+                        raw_property_type = type_tag.span.text.strip()
+                        # Normalize property type from French to English
+                        property_type = self._normalize_property_type(raw_property_type)
                     else:
                         property_type = ""
                         logger.warning("Property type not found for a property element")
@@ -346,7 +362,26 @@ class BrowserManager:
         if url.startswith('/'):
             return f"https://www.immo-data.fr{url}"
         return url
+    
+    def _normalize_property_type(self, raw_type: str) -> str:
+        """
+        Normalize property type from French to English.
         
+        Args:
+            raw_type: Raw property type in French
+            
+        Returns:
+            str: Normalized property type in English
+        """
+        if not raw_type:
+            return "other"
+        
+        # Convert to lowercase for mapping
+        normalized = raw_type.lower().strip()
+        
+        # Map to English equivalent
+        return self.PROPERTY_TYPE_MAPPING.get(normalized, "other")
+    
     async def extract_properties_with_count(
         self, 
         url_data: Dict, 

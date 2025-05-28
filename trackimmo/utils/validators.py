@@ -139,6 +139,65 @@ def normalize_address(address: str) -> str:
     return ' '.join(words)
 
 
+def validate_client(client_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """
+    Validate client data.
+    
+    Args:
+        client_data: The client data to validate
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    required_fields = ['first_name', 'last_name', 'email']
+    
+    # Check required fields
+    for field in required_fields:
+        if field not in client_data or not client_data[field]:
+            return False, f"Missing required field: {field}"
+    
+    # Validate email
+    if not validate_email(client_data['email']):
+        return False, "Invalid email format"
+    
+    # Validate phone number if provided
+    if 'telephone' in client_data and client_data['telephone']:
+        if not validate_phone_number(client_data['telephone']):
+            return False, "Invalid phone number format"
+    
+    # Validate subscription type if provided
+    if 'subscription_type' in client_data and client_data['subscription_type']:
+        valid_subscription_types = ['decouverte', 'pro', 'entreprise']
+        if client_data['subscription_type'] not in valid_subscription_types:
+            return False, f"Invalid subscription type, expected one of: {', '.join(valid_subscription_types)}"
+    
+    # Validate status if provided
+    if 'status' in client_data and client_data['status']:
+        valid_statuses = ['active', 'inactive', 'suspended', 'pending']
+        if client_data['status'] not in valid_statuses:
+            return False, f"Invalid status, expected one of: {', '.join(valid_statuses)}"
+    
+    # Validate send_day if provided
+    if 'send_day' in client_data and client_data['send_day'] is not None:
+        try:
+            send_day = int(client_data['send_day'])
+            if send_day < 1 or send_day > 31:
+                return False, "Send day must be between 1 and 31"
+        except (ValueError, TypeError):
+            return False, "Send day must be a number"
+    
+    # Validate addresses_per_report if provided
+    if 'addresses_per_report' in client_data and client_data['addresses_per_report'] is not None:
+        try:
+            addresses_per_report = int(client_data['addresses_per_report'])
+            if addresses_per_report < 0:
+                return False, "Addresses per report cannot be negative"
+        except (ValueError, TypeError):
+            return False, "Addresses per report must be a number"
+    
+    return True, None
+
+
 def validate_property(property_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """
     Validate property data.
