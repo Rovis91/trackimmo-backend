@@ -103,6 +103,52 @@ success = orchestrator.run(
 )
 ```
 
+## API
+
+TrackImmo provides a RESTful API for managing client processing and property assignments. The API allows you to:
+
+- **Process Clients**: Automatically assign new properties to clients based on their preferences
+- **Manage Properties**: Retrieve and manage client property assignments
+- **Monitor Jobs**: Track processing status and manage the job queue
+- **Administration**: Access system statistics and manage clients
+
+### Quick Start
+
+**Base URL**: `http://147.93.94.3:8000`  
+**API Key**: `cb67274b99d89ab5`
+
+### Basic Usage Examples
+
+```bash
+# Check API health
+curl http://147.93.94.3:8000/health
+
+# Process a client (assign new properties)
+curl -X POST \
+  -H "X-API-Key: cb67274b99d89ab5" \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "your-client-id"}' \
+  http://147.93.94.3:8000/api/process-client
+
+# Get client properties
+curl -H "X-API-Key: cb67274b99d89ab5" \
+  http://147.93.94.3:8000/api/get-client-properties/your-client-id
+
+# Check system stats (admin)
+curl -H "X-Admin-Key: cb67274b99d89ab5" \
+  http://147.93.94.3:8000/admin/stats
+```
+
+### Key Features
+
+- **Automated Processing**: Assigns properties to clients based on age criteria (6-8 years old) and preferences
+- **Weighted Selection**: Prioritizes older properties while maintaining variety
+- **Email Notifications**: Sends automatic notifications when properties are assigned
+- **Job Management**: Asynchronous processing with status tracking and retry capabilities
+- **Admin Controls**: Comprehensive administration endpoints for system management
+
+For complete API documentation, see `trackimmo/api/api_doc.md`.
+
 ## Data Flow Architecture
 
 ### Complete Processing Pipeline

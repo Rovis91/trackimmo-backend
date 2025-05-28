@@ -35,16 +35,16 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         # 2. Process cities (enrich if needed)
         await update_client_cities(client)
         
-        # 3. Scrape and extract properties
+        # 3. Scrape and extract properties (only if needed)
         await scrape_properties_for_client(client)
         
         # 4. Assign properties to client
         assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
         new_addresses = await assign_properties_to_client(client, assign_count)
         
-        # 5. Send notification
+        # 5. Send notification if new addresses found
         if new_addresses:
-            send_client_notification(client, new_addresses)
+            await send_client_notification(client, new_addresses)
         
         # 6. Update client's last_updated field
         await update_client_last_updated(client_id)
@@ -54,7 +54,8 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         return {
             "success": True,
             "properties_assigned": len(new_addresses),
-            "client_id": client_id
+            "client_id": client_id,
+            "message": f"Successfully assigned {len(new_addresses)} properties"
         }
     except Exception as e:
         logger.error(f"Error processing client {client_id}: {str(e)}")
@@ -129,7 +130,7 @@ async def update_client_cities(client: Dict[str, Any]):
 
 async def scrape_properties_for_client(client: Dict[str, Any]):
     """
-    Scrape properties for a client's cities.
+    Scrape properties for a client's cities only if we don't have enough recent data.
     
     Args:
         client: The client data
@@ -143,31 +144,55 @@ async def scrape_properties_for_client(client: Dict[str, Any]):
         city_ids = client["chosen_cities"]
         response = db.get_client().table("cities").select("*").in_("city_id", city_ids).execute()
         
-        # Use your existing scraper for each city
+        # Check if we have enough properties for each city
         for city in response.data:
             try:
-                logger.info(f"Scraping properties for city {city['name']} ({city['city_id']})")
-                # Initialize scraper
-                scraper = ImmoDataScraper()
-                # Set date range for past 3 months
-                today = datetime.now()
-                start_date = (today - timedelta(days=90)).strftime("%m/%Y")
-                end_date = today.strftime("%m/%Y")
-                # Scrape properties (async)
-                result_file = await scraper.scrape_city_async(
-                    city_name=city["name"],
-                    postal_code=city["postal_code"],
-                    property_types=client["property_type_preferences"],
-                    start_date=start_date,
-                    end_date=end_date
-                )
-                logger.info(f"Scraped properties for {city['name']} saved to {result_file}")
+                # Count existing properties for this city in the age range we need (6-8 years)
+                min_date = (datetime.now() - timedelta(days=8*365)).strftime("%Y-%m-%d")
+                max_date = (datetime.now() - timedelta(days=6*365)).strftime("%Y-%m-%d")
+                
+                count_response = db.get_client().table("addresses").select("address_id", count="exact") \
+                    .eq("city_id", city["city_id"]) \
+                    .gte("sale_date", min_date) \
+                    .lte("sale_date", max_date) \
+                    .in_("property_type", client["property_type_preferences"]) \
+                    .execute()
+                
+                existing_count = count_response.count or 0
+                logger.info(f"City {city['name']}: {existing_count} existing properties in 6-8 year range")
+                
+                # If we have less than 50 properties, scrape more
+                if existing_count < 50:
+                    logger.info(f"Scraping properties for city {city['name']} ({city['city_id']})")
+                    
+                    # Initialize scraper
+                    scraper = ImmoDataScraper()
+                    # Set date range for 6-8 years ago
+                    start_date = (datetime.now() - timedelta(days=8*365)).strftime("%m/%Y")
+                    end_date = (datetime.now() - timedelta(days=6*365)).strftime("%m/%Y")
+                    
+                    # Scrape properties (async)
+                    result_file = await scraper.scrape_city_async(
+                        city_name=city["name"],
+                        postal_code=city["postal_code"],
+                        property_types=client["property_type_preferences"],
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    logger.info(f"Scraped properties for {city['name']} saved to {result_file}")
+                else:
+                    logger.info(f"Sufficient properties exist for {city['name']}, skipping scrape")
+                    
             except Exception as e:
                 logger.error(f"Error scraping properties for city {city['city_id']}: {str(e)}")
 
 async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -> List[Dict[str, Any]]:
     """
-    Assign properties to a client.
+    Assign properties to a client following business rules:
+    - Properties sold 6-8 years ago
+    - In client's chosen cities and property types
+    - Not already assigned to this client
+    - Semi-random selection favoring older properties
     
     Args:
         client: The client data
@@ -181,59 +206,54 @@ async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -
     property_types = client.get("property_type_preferences", [])
     
     logger.info(f"Assigning {count} properties to client {client_id}")
+    logger.info(f"Criteria: cities={len(city_ids)}, types={property_types}")
+    
+    if not city_ids or not property_types:
+        logger.warning(f"Client {client_id} missing criteria: cities={len(city_ids)}, types={len(property_types)}")
+        return []
     
     with DBManager() as db:
         # Get previously assigned properties
         assigned_response = db.get_client().table("client_addresses").select("address_id").eq("client_id", client_id).execute()
         assigned_address_ids = [item["address_id"] for item in assigned_response.data]
+        logger.info(f"Client {client_id} already has {len(assigned_address_ids)} assigned properties")
         
-        # Get eligible properties (not already assigned to this client)
-        query = db.get_client().table("addresses").select("*")
+        # Define age range: 6-8 years ago
+        min_date = (datetime.now() - timedelta(days=8*365)).strftime("%Y-%m-%d")
+        max_date = (datetime.now() - timedelta(days=6*365)).strftime("%Y-%m-%d")
         
-        # Filter by city
-        if city_ids:
-            query = query.in_("city_id", city_ids)
-            
-        # Filter by property type
-        if property_types:
-            query = query.in_("property_type", property_types)
+        logger.info(f"Looking for properties sold between {min_date} and {max_date}")
+        
+        # Get eligible properties
+        query = db.get_client().table("addresses").select("*") \
+            .in_("city_id", city_ids) \
+            .in_("property_type", property_types) \
+            .gte("sale_date", min_date) \
+            .lte("sale_date", max_date)
+        
+        # Exclude already assigned properties
+        if assigned_address_ids:
+            query = query.not_.in_("address_id", assigned_address_ids)
             
         properties_response = query.execute()
+        eligible_properties = properties_response.data
         
-        # Filter out already assigned properties
-        eligible_properties = [p for p in properties_response.data if p["address_id"] not in assigned_address_ids]
+        logger.info(f"Found {len(eligible_properties)} eligible properties")
         
-        # Sort by sale date (oldest first)
-        eligible_properties.sort(key=lambda p: p.get("sale_date", ""), reverse=False)
+        if not eligible_properties:
+            logger.warning(f"No eligible properties found for client {client_id}")
+            return []
         
-        # Add some randomization while still prioritizing oldest
-        # Group by month
-        months = {}
-        for prop in eligible_properties:
-            sale_date = prop.get("sale_date", "")
-            month_key = sale_date[:7] if sale_date else "unknown"  # YYYY-MM format
-            if month_key not in months:
-                months[month_key] = []
-            months[month_key].append(prop)
+        # Apply weighted random selection favoring older properties
+        selected_properties = weighted_random_selection(eligible_properties, count)
         
-        # Randomize within each month and create a new list
-        prioritized_properties = []
-        for month_key in sorted(months.keys()):  # Sort by month (oldest first)
-            randomized_month = random.sample(months[month_key], len(months[month_key]))
-            prioritized_properties.extend(randomized_month)
-        
-        # Select properties to assign
-        properties_to_assign = prioritized_properties[:min(count, len(prioritized_properties))]
-        
-        # Check if we have enough properties
-        if len(properties_to_assign) < count:
-            logger.warning(f"Only {len(properties_to_assign)} properties available for client {client_id}, requested {count}")
+        logger.info(f"Selected {len(selected_properties)} properties for assignment")
         
         # Assign properties
         assigned_properties = []
         now = datetime.now().isoformat()
         
-        for prop in properties_to_assign:
+        for prop in selected_properties:
             try:
                 # Create client_address record
                 client_address_id = str(uuid.uuid4())
@@ -248,11 +268,63 @@ async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -
                 }).execute()
                 
                 assigned_properties.append(prop)
+                logger.info(f"Assigned property {prop['address_id']} to client {client_id}")
+                
             except Exception as e:
                 logger.error(f"Error assigning property {prop['address_id']} to client {client_id}: {str(e)}")
         
-        logger.info(f"Assigned {len(assigned_properties)} properties to client {client_id}")
+        logger.info(f"Successfully assigned {len(assigned_properties)} properties to client {client_id}")
         return assigned_properties
+
+def weighted_random_selection(properties: List[Dict[str, Any]], count: int) -> List[Dict[str, Any]]:
+    """
+    Select properties with weighted randomization favoring older properties.
+    
+    Args:
+        properties: List of eligible properties
+        count: Number of properties to select
+        
+    Returns:
+        Selected properties
+    """
+    if len(properties) <= count:
+        return properties
+    
+    # Sort by sale date (oldest first)
+    sorted_properties = sorted(properties, key=lambda p: p.get("sale_date", ""), reverse=False)
+    
+    # Create weights: older properties get higher weights
+    weights = []
+    total_properties = len(sorted_properties)
+    
+    for i, prop in enumerate(sorted_properties):
+        # Weight decreases linearly from oldest to newest
+        # Oldest property gets weight = total_properties, newest gets weight = 1
+        weight = total_properties - i
+        weights.append(weight)
+    
+    # Perform weighted random selection
+    selected_properties = []
+    available_indices = list(range(len(sorted_properties)))
+    available_weights = weights.copy()
+    
+    for _ in range(min(count, len(sorted_properties))):
+        # Choose index based on weights
+        chosen_idx = random.choices(available_indices, weights=available_weights, k=1)[0]
+        
+        # Add to selection
+        actual_idx = available_indices[chosen_idx]
+        selected_properties.append(sorted_properties[actual_idx])
+        
+        # Remove from available options
+        available_indices.pop(chosen_idx)
+        available_weights.pop(chosen_idx)
+        
+        if not available_indices:
+            break
+    
+    logger.info(f"Weighted selection: chose {len(selected_properties)} from {total_properties} properties")
+    return selected_properties
 
 async def update_client_last_updated(client_id: str):
     """Update the client's last_updated timestamp."""
@@ -261,7 +333,7 @@ async def update_client_last_updated(client_id: str):
             "updated_at": datetime.now().isoformat()
         }).eq("client_id", client_id).execute()
 
-
+# Keep existing utility functions
 def filter_properties_by_preferences(properties: List[Dict[str, Any]], client_preferences: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Filter properties based on client preferences.
@@ -283,45 +355,13 @@ def filter_properties_by_preferences(properties: List[Dict[str, Any]], client_pr
         if property_types and prop.get('property_type') not in property_types:
             continue
             
-        # Filter by city (using INSEE code)
-        if chosen_cities and prop.get('insee_code') not in chosen_cities:
+        # Filter by city
+        if chosen_cities and prop.get('city_id') not in chosen_cities:
             continue
             
         filtered.append(prop)
     
     return filtered
-
-
-def limit_and_sort_properties(properties: List[Dict[str, Any]], limit: int = 10, sort_by: str = 'price', sort_order: str = 'desc') -> List[Dict[str, Any]]:
-    """
-    Sort and limit properties.
-    
-    Args:
-        properties: List of property data
-        limit: Maximum number of properties to return
-        sort_by: Field to sort by
-        sort_order: 'asc' or 'desc'
-        
-    Returns:
-        Sorted and limited list of properties
-    """
-    # Sort properties
-    reverse = sort_order.lower() == 'desc'
-    
-    try:
-        if sort_by == 'price':
-            sorted_properties = sorted(properties, key=lambda x: float(x.get('price', 0)), reverse=reverse)
-        elif sort_by == 'sale_date':
-            sorted_properties = sorted(properties, key=lambda x: x.get('sale_date', ''), reverse=reverse)
-        else:
-            sorted_properties = sorted(properties, key=lambda x: x.get(sort_by, ''), reverse=reverse)
-    except (ValueError, TypeError):
-        # If sorting fails, return original list
-        sorted_properties = properties
-    
-    # Limit results
-    return sorted_properties[:limit]
-
 
 def deduplicate_properties(properties: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -338,7 +378,7 @@ def deduplicate_properties(properties: List[Dict[str, Any]]) -> List[Dict[str, A
     
     for prop in properties:
         address_key = prop.get('address_raw', '').lower().strip()
-        city_key = prop.get('city_name', '').lower().strip()
+        city_key = prop.get('city_id', '')
         combined_key = f"{address_key}_{city_key}"
         
         if combined_key not in seen_addresses:
@@ -366,59 +406,3 @@ def deduplicate_properties(properties: List[Dict[str, Any]]) -> List[Dict[str, A
                     deduplicated.append(prop)
     
     return deduplicated
-
-
-def prepare_client_notification_data(client: Dict[str, Any], properties: List[Dict[str, Any]], report_date: datetime) -> Dict[str, Any]:
-    """
-    Prepare data for client notification.
-    
-    Args:
-        client: Client data
-        properties: List of properties for the client
-        report_date: Date of the report
-        
-    Returns:
-        Notification data dictionary
-    """
-    # Calculate summary statistics
-    total_properties = len(properties)
-    
-    property_types = {}
-    prices = []
-    
-    for prop in properties:
-        prop_type = prop.get('property_type', 'unknown')
-        property_types[prop_type] = property_types.get(prop_type, 0) + 1
-        
-        price = prop.get('price')
-        if price:
-            try:
-                prices.append(float(price))
-            except (ValueError, TypeError):
-                pass
-    
-    price_range = {}
-    if prices:
-        price_range = {
-            'min': min(prices),
-            'max': max(prices),
-            'avg': sum(prices) / len(prices)
-        }
-    
-    summary = {
-        'total_properties': total_properties,
-        'property_types': property_types,
-        'price_range': price_range
-    }
-    
-    return {
-        'client': {
-            'first_name': client.get('first_name'),
-            'last_name': client.get('last_name'),
-            'email': client.get('email'),
-            'subscription_type': client.get('subscription_type')
-        },
-        'properties': properties,
-        'report_date': report_date.isoformat(),
-        'summary': summary
-    }
