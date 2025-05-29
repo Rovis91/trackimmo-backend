@@ -1,53 +1,24 @@
-# TrackImmo Backend Dependencies
-
-# Web Framework
-fastapi==0.103.1
-uvicorn[standard]==0.23.2
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 
 # Database
-sqlalchemy==2.0.21
-alembic==1.12.0
-supabase==2.2.0
+supabase>=2.0.0
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
 
-# Data Processing
-pandas==2.2.0
-numpy==1.25.2
-
-# HTTP Client
-requests==2.31.0
-httpx==0.24.1
+# Data Processing  
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.30.0
 
 # Scraping
-playwright==1.39.0
-beautifulsoup4==4.12.2
+playwright>=1.30.0
+beautifulsoup4>=4.12.0
 
-# Data Validation
-pydantic==2.4.2
-pydantic-settings==2.0.3
-email-validator==2.0.0
-
-# Authentication
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
-
-# Environment Variables
-python-dotenv==1.0.0
+# Monitoring
+prometheus-client>=0.15.0
 
 # Utilities
-python-dateutil==2.8.2
-loguru==0.7.2
-tqdm==4.66.1
-prometheus-client==0.17.1
-
-# Geographic Data
-geopy==2.4.0
-shapely==2.0.1
-
-# Testing
-pytest==7.4.2
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
-pytest-html==3.2.0
-faker==18.0.0
-factory-boy==3.3.0
+python-dateutil>=2.8.0
