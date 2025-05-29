@@ -17,7 +17,7 @@ jobs:
         script: |
           cd /opt/trackimmo
           systemctl stop trackimmo-api
-          git pull origin main
+          git pull origin master
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
