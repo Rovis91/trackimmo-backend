@@ -105,7 +105,7 @@ success = orchestrator.run(
 
 ## API
 
-TrackImmo provides a RESTful API for managing client processing and property assignments. The API allows you to:
+TrackImmo provides a API for managing client processing and property assignments. The API allows you to:
 
 - **Process Clients**: Automatically assign new properties to clients based on their preferences
 - **Manage Properties**: Retrieve and manage client property assignments
