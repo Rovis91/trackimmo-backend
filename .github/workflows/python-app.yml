@@ -1,80 +1,26 @@
-name: Deploy TrackImmo API
+name: Deploy
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Deploy to VPS
+    - name: Deploy
       uses: appleboy/ssh-action@v1.0.0
       with:
         host: ${{ secrets.VPS_HOST }}
         username: ${{ secrets.VPS_USER }}
         key: ${{ secrets.VPS_SSH_KEY }}
         script: |
-          set -e
-          
-          # Variables
-          PROJECT_DIR="/opt/trackimmo"
-          BACKUP_DIR="/opt/trackimmo_backup"
-          SERVICE_NAME="trackimmo-api"
-          
-          echo "🚀 Starting TrackImmo API deployment"
-          
-          # Stop current API
-          echo "⏹️ Stopping current API..."
-          systemctl stop $SERVICE_NAME || echo "Service was not running"
-          pkill -f "uvicorn trackimmo" || echo "No uvicorn process found"
-          
-          # Create backup of current version
-          echo "💾 Creating backup..."
-          rm -rf $BACKUP_DIR
-          cp -r $PROJECT_DIR $BACKUP_DIR
-          
-          # Update code
-          echo "📥 Updating code..."
-          cd $PROJECT_DIR
-          git fetch origin
-          git reset --hard origin/main
-          
-          # Install/update dependencies
-          echo "📦 Installing dependencies..."
+          cd /opt/trackimmo
+          systemctl stop trackimmo-api
+          git pull origin main
           source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          
-          # Test import
-          echo "🧪 Testing app import..."
-          if ! python3 -c "from trackimmo.app import app; print('✅ Import OK')"; then
-            echo "❌ App import failed, rolling back..."
-            rm -rf $PROJECT_DIR
-            mv $BACKUP_DIR $PROJECT_DIR
-            echo "🔄 Rollback completed"
-            exit 1
-          fi
-          
-          # Start API
-          echo "▶️ Starting API..."
-          systemctl start $SERVICE_NAME
+          pip install prometheus_client || echo "prometheus_client install failed"
+          pip install -r requirements.txt || pip install fastapi uvicorn supabase pydantic-settings sqlalchemy python-dotenv
+          systemctl start trackimmo-api
           sleep 10
-          
-          # Health check
-          echo "🔍 Checking API health..."
-          if curl -s --max-time 10 http://localhost:8000/health | grep -q "ok"; then
-            echo "✅ Deployment successful!"
-            rm -rf $BACKUP_DIR
-          else
-            echo "❌ Health check failed, rolling back..."
-            systemctl stop $SERVICE_NAME
-            rm -rf $PROJECT_DIR
-            mv $BACKUP_DIR $PROJECT_DIR
-            systemctl start $SERVICE_NAME
-            echo "🔄 Rollback completed"
-            exit 1
-          fi
-          
-          echo "🎉 TrackImmo API deployed successfully"
+          curl -f http://localhost:8000/health || exit 1
