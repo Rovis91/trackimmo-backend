@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application"""
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description="API for TrackImmo - Real estate data scraping and enrichment",
