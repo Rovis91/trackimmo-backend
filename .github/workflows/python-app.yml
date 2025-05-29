@@ -19,8 +19,7 @@ jobs:
           systemctl stop trackimmo-api
           git pull origin main
           source venv/bin/activate
-          pip install prometheus_client || echo "prometheus_client install failed"
-          pip install -r requirements.txt || pip install fastapi uvicorn supabase pydantic-settings sqlalchemy python-dotenv
+          pip install prometheus_client requests beautifulsoup4 pandas playwright
           systemctl start trackimmo-api
-          sleep 10
-          curl -f http://localhost:8000/health || exit 1
+          sleep 15
+          curl -f http://localhost:8000/health
