@@ -2,14 +2,17 @@
 Client processing module for TrackImmo.
 """
 import random
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 import uuid
+from pathlib import Path
 
 from trackimmo.utils.logger import get_logger
 from trackimmo.modules.db_manager import DBManager
 from trackimmo.modules.city_scraper import CityDataScraper, scrape_cities
 from trackimmo.modules.scraper import ImmoDataScraper
+from trackimmo.modules.enrichment import EnrichmentOrchestrator
 from trackimmo.utils.email_sender import send_client_notification
 
 logger = get_logger(__name__)
@@ -35,8 +38,8 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         # 2. Process cities (enrich if needed)
         await update_client_cities(client)
         
-        # 3. Scrape and extract properties (only if needed)
-        await scrape_properties_for_client(client)
+        # 3. Scrape, enrich and insert properties (only if needed)
+        await scrape_and_enrich_properties_for_client(client)
         
         # 4. Assign properties to client
         assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
@@ -128,9 +131,9 @@ async def update_client_cities(client: Dict[str, Any]):
                 except Exception as e:
                     logger.error(f"Error updating city {city_id}: {str(e)}")
 
-async def scrape_properties_for_client(client: Dict[str, Any]):
+async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
     """
-    Scrape properties for a client's cities only if we don't have enough recent data.
+    Scrape properties for a client's cities, enrich them, and insert into database.
     
     Args:
         client: The client data
@@ -180,11 +183,62 @@ async def scrape_properties_for_client(client: Dict[str, Any]):
                         end_date=end_date
                     )
                     logger.info(f"Scraped properties for {city['name']} saved to {result_file}")
+                    
+                    # Now run the enrichment pipeline to process and insert the scraped data
+                    await enrich_and_insert_properties(result_file, city)
+                    
                 else:
                     logger.info(f"Sufficient properties exist for {city['name']}, skipping scrape")
                     
             except Exception as e:
-                logger.error(f"Error scraping properties for city {city['city_id']}: {str(e)}")
+                logger.error(f"Error processing properties for city {city['city_id']}: {str(e)}")
+
+async def enrich_and_insert_properties(csv_file: str, city: Dict[str, Any]):
+    """
+    Run the enrichment pipeline on scraped properties and insert them into the database.
+    
+    Args:
+        csv_file: Path to the CSV file with scraped properties
+        city: City data dictionary
+    """
+    try:
+        logger.info(f"Starting enrichment pipeline for {csv_file}")
+        
+        # Configure enrichment with city bounding box if available
+        config = {
+            'data_dir': str(Path(csv_file).parent.parent),  # Go up to data directory
+            'original_bbox': {
+                'min_lat': city.get('min_lat', 0),
+                'max_lat': city.get('max_lat', 0),
+                'min_lon': city.get('min_lon', 0),
+                'max_lon': city.get('max_lon', 0)
+            } if all(k in city for k in ['min_lat', 'max_lat', 'min_lon', 'max_lon']) else None
+        }
+        
+        # Run enrichment pipeline
+        orchestrator = EnrichmentOrchestrator(config)
+        success = orchestrator.run(
+            input_file=csv_file,
+            start_stage=1,  # Start from normalization
+            end_stage=6,    # End at database integration
+            debug=False     # Don't keep intermediate files
+        )
+        
+        if success:
+            logger.info(f"Enrichment pipeline completed successfully for {city['name']}")
+        else:
+            logger.error(f"Enrichment pipeline failed for {city['name']}")
+            
+        # Clean up the original CSV file
+        try:
+            os.remove(csv_file)
+            logger.info(f"Cleaned up scraped file: {csv_file}")
+        except Exception as e:
+            logger.warning(f"Could not remove scraped file {csv_file}: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Error in enrichment pipeline for {csv_file}: {str(e)}")
+        raise
 
 async def assign_properties_to_client(client: Dict[str, Any], count: int = 10) -> List[Dict[str, Any]]:
     """
