@@ -1,232 +1,325 @@
 # TrackImmo API Documentation
 
-## Installation & Setup
+## Installation & Deployment
 
-### Prerequisites
+### Server Setup
 
-- Python 3.11+
-- Ubuntu/Debian server
-- Git access to repository
-- Supabase database configured
-
-### Quick Install
+The TrackImmo API is deployed on VPS at `http://147.93.94.3:8000` with the following setup:
 
 ```bash
-# 1. Clone repository
-git clone <repository-url> /opt/trackimmo
-cd /opt/trackimmo
+# Project structure
+/opt/trackimmo/                 # Main project directory
+├── venv/                       # Python virtual environment
+├── trackimmo/                  # API source code
+├── requirements.txt            # Python dependencies
+├── .env                        # Environment variables
+└── logs/                       # Application logs
 
-# 2. Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# 3. Install dependencies
-pip install --upgrade pip
-pip install fastapi uvicorn supabase pydantic-settings
-
-# 4. Create environment file
-cp .env.example .env
-nano .env  # Configure your settings
+# System service
+/etc/systemd/system/trackimmo-api.service    # Systemd service file
 ```
 
-### Environment Configuration (.env)
+### Environment Configuration
+
+Required environment variables in `/opt/trackimmo/.env`:
 
 ```bash
-# Required Database Settings
+# Database
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
-API_KEY=cb67274b99d89ab5
 
-# Email Settings (Optional)
+# API Authentication
+API_KEY=cb67274b99d89ab5
+ADMIN_API_KEY=cb67274b99d89ab5
+
+# Email Configuration
 EMAIL_SENDER=noreply@trackimmo.app
 SMTP_SERVER=smtp.hostinger.com
 SMTP_PORT=587
 SMTP_USERNAME=your_smtp_user
 SMTP_PASSWORD=your_smtp_password
 
-# Server Settings
+# API Settings
 API_BASE_URL=http://147.93.94.3:8000
-DEBUG=false
+MIN_PROPERTY_AGE_YEARS=6
+MAX_PROPERTY_AGE_YEARS=8
 ```
 
-### Create Core Files
-
-Create the main application files if missing:
-
-**trackimmo/api/__init__.py**
-```python
-"""API package for TrackImmo."""
-```
-
-**trackimmo/utils/__init__.py**
-```python
-"""Utilities package for TrackImmo."""
-```
-
-### Service Setup
+### Service Management
 
 ```bash
-# Create systemd service
-sudo nano /etc/systemd/system/trackimmo-api.service
+# Check API status
+systemctl status trackimmo-api
+
+# Start/stop API
+systemctl start trackimmo-api
+systemctl stop trackimmo-api
+
+# View logs
+journalctl -u trackimmo-api -f
+
+# Restart API
+systemctl restart trackimmo-api
 ```
 
-**Service file content:**
-```ini
-[Unit]
-Description=TrackImmo API
-After=network.target
+### Deployment Process
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/trackimmo
-Environment=PATH=/opt/trackimmo/venv/bin
-ExecStart=/opt/trackimmo/venv/bin/uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
-Restart=always
+Automatic deployment via GitHub Actions:
 
-[Install]
-WantedBy=multi-user.target
-```
+1. **Stop** current API service
+2. **Backup** current version
+3. **Update** code from GitHub
+4. **Install** dependencies
+5. **Test** app import
+6. **Start** new API
+7. **Verify** health check
+8. **Rollback** if any step fails
 
-**Enable and start service:**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable trackimmo-api
-sudo systemctl start trackimmo-api
-sudo systemctl status trackimmo-api
-```
+## Base URL
 
-### Verification
-
-```bash
-# Check service status
-sudo systemctl status trackimmo-api
-
-# Test API health
-curl http://localhost:8000/health
-
-# Check from external
-curl http://147.93.94.3:8000/health
-```
-
-### GitHub Actions Deployment
-
-The repository includes automated deployment via GitHub Actions. Required secrets:
-
-- `HOST`: Server IP (147.93.94.3)
-- `USERNAME`: SSH username (root)
-- `SSH_KEY`: Private SSH key for server access
-
-Deployment triggers on push to main branch and automatically:
-1. Tests code syntax
-2. Connects to server via SSH
-3. Pulls latest changes
-4. Installs dependencies
-5. Restarts API service
-6. Verifies deployment
-
-### Troubleshooting
-
-**API not responding:**
-```bash
-# Check process
-ps aux | grep uvicorn
-
-# Check logs
-sudo journalctl -u trackimmo-api -f
-
-# Manual restart
-sudo systemctl restart trackimmo-api
-```
-
-**Missing files:**
-```bash
-# Create required directories
-mkdir -p trackimmo/api trackimmo/utils tests
-
-# Create missing __init__.py files
-touch trackimmo/api/__init__.py
-touch trackimmo/utils/__init__.py
-```
-
-**Database connection issues:**
-```bash
-# Test Supabase connection
-python3 -c "
-from trackimmo.modules.db_manager import DBManager
-with DBManager() as db:
-    response = db.get_client().table('clients').select('client_id').limit(1).execute()
-    print('Database OK')
-"
-```
-
-## API Reference
-
-### Base URL
-```
+``` txt
 Production: http://147.93.94.3:8000
 ```
 
-### Authentication
-All endpoints require `X-API-Key` header:
+## Authentication
+
+All endpoints require API key authentication:
+
 ```bash
+# Client APIs
 curl -H "X-API-Key: cb67274b99d89ab5" http://147.93.94.3:8000/api/...
+
+# Admin APIs  
+curl -H "X-Admin-Key: cb67274b99d89ab5" http://147.93.94.3:8000/admin/...
 ```
 
-### Core Endpoints
+## Core Endpoints
 
-#### Health Check
+### Health & Status
+
+#### **GET /health**
+
+Basic API health check.
+
 ```bash
-GET /health
-# Response: {"status": "ok", "service": "TrackImmo API", "version": "1.0.0"}
+curl http://147.93.94.3:8000/health
 ```
 
-#### Client Processing
-```bash
-POST /api/process-client
-Content-Type: application/json
-X-API-Key: cb67274b99d89ab5
+**Response:**
 
-{"client_id": "e86f4960-f848-4236-b45c-0759b95db5a3"}
+```json
+{
+  "status": "ok",
+  "service": "TrackImmo API", 
+  "version": "1.0.0"
+}
 ```
 
-#### Admin Statistics
+#### **GET /admin/health**
+
+Detailed health check with database and email status.
+
 ```bash
-GET /admin/stats
-X-Admin-Key: cb67274b99d89ab5
+curl -H "X-Admin-Key: cb67274b99d89ab5" http://147.93.94.3:8000/admin/health
 ```
 
-### Example Usage
+## Client Processing
+
+### **POST /api/process-client**
+
+Process client with business rules (6-8 year old properties, weighted selection).
 
 ```bash
-# Test client processing
 curl -X POST \
-  -H "X-API-Key: cb67274b99d89ab5" \
-  -H "Content-Type: application/json" \
-  -d '{"client_id": "e86f4960-f848-4236-b45c-0759b95db5a3"}' \
-  http://147.93.94.3:8000/api/process-client
-
-# Check job status (use job_id from response)
-curl -H "X-API-Key: cb67274b99d89ab5" \
-  http://147.93.94.3:8000/api/job-status/JOB_ID
-
-# Get client properties
-curl -H "X-API-Key: cb67274b99d89ab5" \
-  "http://147.93.94.3:8000/api/get-client-properties/e86f4960-f848-4236-b45c-0759b95db5a3?limit=5"
+     -H "X-API-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"client_id": "e86f4960-f848-4236-b45c-0759b95db5a3"}' \
+     http://147.93.94.3:8000/api/process-client
 ```
 
-### Business Logic
+**Response:**
 
-The API implements property assignment rules:
-- Properties sold 6-8 years ago
-- Weighted selection favoring older properties
-- Matches client's city and property type preferences
-- Automatic deduplication and email notifications
+```json
+{
+  "success": true,
+  "job_id": "job-uuid",
+  "client_id": "client-uuid",
+  "message": "Processing started"
+}
+```
 
-### Support
+### **POST /api/add-addresses**
 
-For issues:
-1. Check service status: `sudo systemctl status trackimmo-api`
-2. Review logs: `sudo journalctl -u trackimmo-api -f`
-3. Test health endpoint: `curl http://localhost:8000/health`
-4. Verify configuration: `python3 -c "from trackimmo.config import settings; print('Config OK')"`
+Add specific number of addresses to client.
+
+```bash
+curl -X POST \
+     -H "X-API-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"client_id": "client-uuid", "count": 5}' \
+     http://147.93.94.3:8000/api/add-addresses
+```
+
+### **GET /api/job-status/{job_id}**
+
+Check processing job status.
+
+```bash
+curl -H "X-API-Key: cb67274b99d89ab5" \
+     http://147.93.94.3:8000/api/job-status/job-uuid
+```
+
+### **GET /api/get-client-properties/{client_id}**
+
+Get client's assigned properties with pagination.
+
+```bash
+curl -H "X-API-Key: cb67274b99d89ab5" \
+     "http://147.93.94.3:8000/api/get-client-properties/client-uuid?limit=10"
+```
+
+## Administration
+
+### **GET /admin/stats**
+
+System statistics (clients, properties, jobs).
+
+```bash
+curl -H "X-Admin-Key: cb67274b99d89ab5" \
+     http://147.93.94.3:8000/admin/stats
+```
+
+### **GET /admin/clients**
+
+List all clients with filtering.
+
+```bash
+curl -H "X-Admin-Key: cb67274b99d89ab5" \
+     "http://147.93.94.3:8000/admin/clients?status=active&limit=10"
+```
+
+### **POST /admin/test-email**
+
+Test email templates and SMTP configuration.
+
+```bash
+curl -X POST \
+     -H "X-Admin-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"recipient": "test@example.com", "template_type": "notification"}' \
+     http://147.93.94.3:8000/admin/test-email
+```
+
+**Template Types:** `config`, `welcome`, `notification`, `error`
+
+### **POST /admin/test-client-processing**
+
+Test client processing without full scraping.
+
+```bash
+curl -X POST \
+     -H "X-Admin-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"client_id": "client-uuid", "count": 3}' \
+     http://147.93.94.3:8000/admin/test-client-processing
+```
+
+## Business Rules
+
+### Property Assignment Logic
+
+- **Age Filter**: Properties sold 6-8 years ago only
+- **Client Match**: Must match client's cities and property types
+- **No Duplicates**: Excludes previously assigned properties
+- **Weighted Selection**: Prioritizes older properties with linear weighting
+- **Auto Email**: Sends HTML notification email on successful assignment
+
+## Error Handling
+
+**HTTP Status Codes:**
+
+- `200`: Success
+- `401`: Invalid API key
+- `404`: Resource not found
+- `500`: Server error
+
+**Error Format:**
+
+```json
+{
+  "detail": "Error description"
+}
+```
+
+## Complete Test Workflow
+
+```bash
+# Test client environment
+API_KEY="cb67274b99d89ab5"
+CLIENT_ID="e86f4960-f848-4236-b45c-0759b95db5a3"
+BASE_URL="http://147.93.94.3:8000"
+
+# 1. Health check
+curl $BASE_URL/health
+
+# 2. Client info
+curl -H "X-Admin-Key: $API_KEY" $BASE_URL/admin/client/$CLIENT_ID
+
+# 3. Current properties
+curl -H "X-API-Key: $API_KEY" "$BASE_URL/api/get-client-properties/$CLIENT_ID?limit=3"
+
+# 4. Add properties
+RESPONSE=$(curl -s -X POST \
+     -H "X-API-Key: $API_KEY" \
+     -H "Content-Type: application/json" \
+     -d "{\"client_id\": \"$CLIENT_ID\", \"count\": 3}" \
+     $BASE_URL/api/add-addresses)
+
+# 5. Check job status
+JOB_ID=$(echo $RESPONSE | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
+curl -H "X-API-Key: $API_KEY" $BASE_URL/api/job-status/$JOB_ID
+
+# 6. Test email
+curl -X POST \
+     -H "X-Admin-Key: $API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"recipient": "test@example.com", "template_type": "config"}' \
+     $BASE_URL/admin/test-email
+```
+
+## Troubleshooting
+
+### Check API Status
+
+```bash
+# Service status
+systemctl status trackimmo-api
+
+# Process check
+ps aux | grep uvicorn
+
+# Port check
+netstat -tlnp | grep 8000
+
+# Logs
+journalctl -u trackimmo-api -f
+```
+
+### Manual Restart
+
+```bash
+# If service fails
+cd /opt/trackimmo
+source venv/bin/activate
+python3 -m uvicorn trackimmo.app:app --host 0.0.0.0 --port 8000
+```
+
+### Database Test
+
+```bash
+cd /opt/trackimmo
+source venv/bin/activate
+python3 -c "from trackimmo.modules.db_manager import DBManager; print('DB OK')"
+```
+
+The API runs 24/7 with automatic deployment, monitoring, and rollback capabilities for reliable operation.
