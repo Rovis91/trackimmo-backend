@@ -63,7 +63,7 @@ def create_app() -> FastAPI:
         
         openapi_schema = get_openapi(
             title=settings.PROJECT_NAME,
-            version="1.0.0",
+            version="1.0.1",
             description="API for TrackImmo - Real estate data scraping and enrichment",
             routes=app.routes,
         )

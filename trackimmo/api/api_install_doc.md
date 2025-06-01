@@ -111,7 +111,7 @@ curl http://147.93.94.3:8000/health
 {
   "status": "ok",
   "service": "TrackImmo API", 
-  "version": "1.0.0"
+  "version": "1.0.1"
 }
 ```
 

@@ -24,13 +24,13 @@ async def health_check():
     return {
         "status": "ok",
         "service": "TrackImmo API",
-        "version": "1.0.0"
+        "version": "1.0.1"
     }
 
 @router.get("/version", response_model=Dict[str, str])
 async def version():
     """Get API version."""
     return {
-        "version": "1.0.0",
+        "version": "1.0.1",
         "service": "TrackImmo API"
     }

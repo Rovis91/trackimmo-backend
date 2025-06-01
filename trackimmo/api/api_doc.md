@@ -40,7 +40,7 @@ Basic health check for the API service.
 {
   "status": "ok",
   "service": "TrackImmo API", 
-  "version": "1.0.0"
+  "version": "1.0.1"
 }
 ```
 
@@ -52,7 +52,7 @@ Get API version information.
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.0.1",
   "service": "TrackImmo API"
 }
 ```
