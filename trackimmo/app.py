@@ -34,7 +34,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.PROJECT_NAME,
         description="API for TrackImmo - Real estate data scraping and enrichment",
-        version="1.0.0",
+        version="1.0.1",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
