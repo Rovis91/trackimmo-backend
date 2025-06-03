@@ -98,7 +98,7 @@ class BrowserManager:
                     
                     if properties:
                         all_properties.extend(properties)
-                        logger.info(f"Extracted {len(properties)} properties from URL")
+                        #logger.info(f"Extracted {len(properties)} properties from URL")
                     else:
                         logger.warning(f"No properties extracted from URL")
                     
@@ -192,15 +192,97 @@ class BrowserManager:
                     date_elem = element.select_one(self.SELECTORS["date"])
                     details_url_elem = element.select_one(self.SELECTORS["details_url"])
 
-                    # Extract property type from HTML, not from URL data
+                    # Extract property type from HTML with improved parsing
+                    property_type = ""
+                    raw_property_type = ""
+                    
+                    # Method 1: Look for the specific class with span (most common)
                     type_tag = element.find('p', class_='flex items-center text-sm text-gray-400')
-                    if type_tag and type_tag.span:
-                        raw_property_type = type_tag.span.text.strip()
-                        # Normalize property type from French to English
-                        property_type = self._normalize_property_type(raw_property_type)
+                    if type_tag:
+                        # First try to find the span element inside
+                        span_elem = type_tag.find('span')
+                        if span_elem and span_elem.text and span_elem.text.strip():
+                            raw_property_type = span_elem.text.strip()
+                            property_type = self._normalize_property_type(raw_property_type)
+                            logger.debug(f"Method 1 found property type: '{raw_property_type}' -> '{property_type}'")
+                        else:
+                            # Fallback: try to extract text without SVG content
+                            # Remove SVG elements first
+                            for svg in type_tag.find_all('svg'):
+                                svg.decompose()
+                            text_content = type_tag.get_text(strip=True)
+                            if text_content:
+                                # Split by whitespace and take the last non-empty word
+                                words = [w.strip() for w in text_content.split() if w.strip()]
+                                if words:
+                                    raw_property_type = words[-1]
+                                    property_type = self._normalize_property_type(raw_property_type)
+                                    logger.debug(f"Method 1 fallback found: '{raw_property_type}' -> '{property_type}'")
+                    
+                    # Method 2: Look for spans with property type keywords directly
+                    if not property_type:
+                        spans = element.find_all('span')
+                        for span in spans:
+                            if span.text and span.text.strip():
+                                text = span.text.strip().lower()
+                                if any(keyword in text for keyword in ['appartement', 'maison', 'terrain', 'local', 'commercial']):
+                                    raw_property_type = span.text.strip()
+                                    property_type = self._normalize_property_type(raw_property_type)
+                                    logger.debug(f"Method 2 found property type: '{raw_property_type}' -> '{property_type}'")
+                                    break
+                    
+                    # Method 3: Search in all text content (broadest search)
+                    if not property_type:
+                        all_text = element.get_text().lower()
+                        # More specific pattern matching
+                        if 'appartement' in all_text:
+                            property_type = 'apartment'
+                            logger.debug(f"Method 3 found 'appartement' in text -> 'apartment'")
+                        elif 'maison' in all_text:
+                            property_type = 'house'
+                            logger.debug(f"Method 3 found 'maison' in text -> 'house'")
+                        elif 'terrain' in all_text:
+                            property_type = 'land'
+                            logger.debug(f"Method 3 found 'terrain' in text -> 'land'")
+                        elif 'local commercial' in all_text or 'commercial' in all_text:
+                            property_type = 'commercial'
+                            logger.debug(f"Method 3 found 'commercial' in text -> 'commercial'")
+                    
+                    # Method 4: Try alternative CSS selectors (backup)
+                    if not property_type:
+                        # Try different class combinations that might contain property type
+                        alt_selectors = [
+                            'p.text-sm.text-gray-400',
+                            'span.text-gray-400',
+                            'div.text-sm span',
+                            'p span'
+                        ]
+                        for selector in alt_selectors:
+                            elements = element.select(selector)
+                            for elem in elements:
+                                if elem.text and elem.text.strip():
+                                    text = elem.text.strip().lower()
+                                    if any(keyword in text for keyword in ['appartement', 'maison', 'terrain', 'local', 'commercial']):
+                                        raw_property_type = elem.text.strip()
+                                        property_type = self._normalize_property_type(raw_property_type)
+                                        logger.debug(f"Method 4 ({selector}) found: '{raw_property_type}' -> '{property_type}'")
+                                        break
+                            if property_type:
+                                break
+                    
+                    # Final fallback and logging
+                    if not property_type:
+                        property_type = "other"
+                        # Log first few times for debugging
+                        if len(properties) < 3:  # Only log for first few properties to avoid spam
+                            logger.warning(f"Property type not found in property {len(properties)+1}. Element HTML sample: {str(element)[:200]}...")
+                            logger.warning(f"All text content: {element.get_text()[:100]}...")
+                        else:
+                            logger.debug("Property type not found, using 'other'")
                     else:
-                        property_type = ""
-                        logger.warning("Property type not found for a property element")
+                        # Log successful extractions for first few properties
+                        if len(properties) < 5:
+                            logger.info(f"Property {len(properties)+1}: Successfully extracted type '{property_type}' from '{raw_property_type}'")
 
                     # Extract address and city
                     address, city, postal_code = self._parse_address(
@@ -440,18 +522,20 @@ class BrowserManager:
                 all_properties.extend(properties)
                 
                 # Check if we need further subdivision (when we hit the 101 property limit)
-                # Removed max_recursion constraint and check subdivision_level against max_subdivision_level
-                if adaptive_generator and property_count >= 95:
+                # Using progressive subdivision approach with caching
+                if adaptive_generator and property_count >= 99:
                     
-                    # Log subdivision decision based on current subdivision level
-                    if subdivision_level == 0:
-                        logger.warning(f"URL has {property_count} properties, subdividing by TYPE...")
-                    elif subdivision_level == 1:
-                        logger.warning(f"URL has {property_count} properties, subdividing by PRICE...")
-                    elif subdivision_level == 2:
-                        logger.warning(f"URL has {property_count} properties, refining price subdivision...")
-                    else:
-                        logger.warning(f"URL has {property_count} properties, performing deep subdivision (level {subdivision_level+1})...")
+                    # Log subdivision decision with progressive context
+                    subdivision_level = url_data.get("subdivision_level", 0)
+                    progressive_level = url_data.get("progressive_level", 1)
+                    
+                    # logger.warning(f"Progressive subdivision triggered: {property_count} properties >= 99 threshold")
+                    # if subdivision_level == 0:
+                    #     logger.warning(f"Level 0: Subdividing by PROPERTY TYPE or progressive PRICE...")
+                    # elif subdivision_level == 1:
+                    #     logger.warning(f"Level 1: Progressive PRICE subdivision...")
+                    # else:
+                    #     logger.warning(f"Level {subdivision_level}: Deep progressive subdivision (progressive level {progressive_level})...")
                         
                     # Pass extracted properties for appropriate subdivision
                     subdivided_urls = adaptive_generator.subdivide_if_needed(

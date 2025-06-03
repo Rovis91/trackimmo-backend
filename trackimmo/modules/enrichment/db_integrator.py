@@ -336,7 +336,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Integration of enriched properties")
     parser.add_argument("--input", help="Input CSV file", required=True)
     parser.add_argument("--output", help="Output CSV file", required=False)
-    parser.add_argument("--batch", type=int, default=100, help="Batch size for insertion")
+    parser.add_argument("--batch", type=int, default=1000, help="Batch size for insertion")
     
     args = parser.parse_args()
     output = args.output or args.input.replace(".csv", "_db_report.csv")

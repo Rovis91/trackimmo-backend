@@ -60,7 +60,10 @@ class ProcessorBase:
             self.logger.error("Aucun chemin de sortie spécifié")
             return False
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Only create directory if path contains a directory component
+            dir_path = os.path.dirname(path)
+            if dir_path:  # Only if directory path is not empty
+                os.makedirs(dir_path, exist_ok=True)
             df.to_csv(path, index=False)
             self.logger.info(f"Sauvegardé {len(df)} lignes dans {path}")
             return True

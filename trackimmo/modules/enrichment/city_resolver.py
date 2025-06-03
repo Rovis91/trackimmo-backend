@@ -160,10 +160,26 @@ class CityResolver(ProcessorBase):
                 if '.' in insee_code:
                     insee_code = insee_code.split('.')[0]
                 
-                # Vérifier que le code INSEE n'est pas trop long
-                if len(insee_code) > 10:
-                    insee_code = insee_code[:10]
+                # Valider et formater le code INSEE
+                # Les codes INSEE doivent être de 5 caractères alphanumériques
+                if not insee_code or insee_code.lower() in ['nan', 'none', 'null']:
+                    self.logger.warning(f"Code INSEE vide ou invalide pour {city_name}, ignorer cette ville")
+                    continue
+                
+                # Vérifier que le code INSEE a exactement 5 caractères
+                if len(insee_code) < 5:
+                    insee_code = insee_code.zfill(5)  # Compléter avec des zéros à gauche
+                    self.logger.warning(f"Code INSEE complété pour {city_name}: {insee_code}")
+                elif len(insee_code) > 5:
+                    insee_code = insee_code[:5]  # Tronquer
                     self.logger.warning(f"Code INSEE tronqué pour {city_name}: {insee_code}")
+                
+                # Vérifier que le code INSEE ne contient que des caractères valides (chiffres et lettres)
+                if not insee_code.replace('A', '').replace('B', '').isdigit():
+                    # Pour la Corse, on peut avoir 2A ou 2B au début
+                    if not (insee_code.startswith('2A') or insee_code.startswith('2B')) or len(insee_code) != 5:
+                        self.logger.warning(f"Code INSEE invalide pour {city_name}: {insee_code}, ignoré")
+                        continue
                 
                 resolved_cities.append({
                     "name": city_name,
@@ -287,14 +303,37 @@ class CityResolver(ProcessorBase):
                         
                         # Insérer avec gestion des conflits
                         supabase_client = db.get_client()
-                        result = supabase_client.table("cities").insert(insert_data).execute()
+                        
+                        # Use upsert to handle duplicates gracefully
+                        result = supabase_client.table("cities").upsert(
+                            insert_data,
+                            on_conflict="insee_code"
+                        ).execute()
                         
                         if result.data and len(result.data) > 0:
                             city_id = result.data[0].get("city_id")
                             city_data["city_id"] = city_id
                             successful_cities.append(city_data)
+                            self.logger.info(f"Ville ajoutée/mise à jour: {city_data['name']} (ID: {city_id})")
+                        else:
+                            self.logger.warning(f"Aucune donnée retournée pour la ville {city_data['name']}")
                     except Exception as e:
-                        self.logger.error(f"Erreur lors de l'ajout de la ville {city_data['name']}: {str(e)}")
+                        error_msg = str(e)
+                        if "duplicate key value violates unique constraint" in error_msg:
+                            # City already exists, try to get its ID
+                            try:
+                                existing_city = supabase_client.table("cities").select("*").eq("insee_code", insee_code).execute()
+                                if existing_city.data and len(existing_city.data) > 0:
+                                    city_id = existing_city.data[0].get("city_id")
+                                    city_data["city_id"] = city_id
+                                    successful_cities.append(city_data)
+                                    self.logger.info(f"Ville existante trouvée: {city_data['name']} (ID: {city_id})")
+                                else:
+                                    self.logger.error(f"Ville {city_data['name']} existe mais impossible de récupérer l'ID")
+                            except Exception as e2:
+                                self.logger.error(f"Erreur lors de la récupération de la ville existante {city_data['name']}: {str(e2)}")
+                        else:
+                            self.logger.error(f"Erreur lors de l'ajout de la ville {city_data['name']}: {error_msg}")
             
             self.logger.info(f"Ajouté {len(successful_cities)} villes à la base de données sur {len(cities)} tentées")
             return True

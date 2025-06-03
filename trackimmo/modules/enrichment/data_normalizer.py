@@ -14,11 +14,18 @@ class DataNormalizer(ProcessorBase):
     
     # Mapping des types de propriétés français vers les types de la base de données
     PROPERTY_TYPE_MAPPING = {
+        # French mappings
         'maison': 'house',
         'appartement': 'apartment',
         'terrain': 'land',
         'local commercial': 'commercial',
-        'autre': 'other'
+        'autre': 'other',
+        # English mappings (already normalized from scraper)
+        'house': 'house',
+        'apartment': 'apartment',
+        'land': 'land',
+        'commercial': 'commercial',
+        'other': 'other'
     }
     
     def __init__(self, input_path: str = None, output_path: str = None):

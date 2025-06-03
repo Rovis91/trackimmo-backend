@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     SCRAPER_TIMEOUT: int = 30
     SCRAPER_USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     SCRAPER_MAX_RETRIES: int = 3
-    SCRAPER_DELAY: float = 1.0  # in seconds
-    SCRAPER_BROWSER_POOL_SIZE: int = 3
+    SCRAPER_DELAY: float = 0.2  # in seconds
+    SCRAPER_BROWSER_POOL_SIZE: int = 30
     SCRAPER_BROWSER_TIMEOUT: int = 60
     
     # Client processing settings

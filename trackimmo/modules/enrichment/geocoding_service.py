@@ -76,17 +76,66 @@ class GeocodingService(ProcessorBase):
                     # Combiner avec les données originales
                     chunk_result = chunk_df.copy()
                     
-                    # Ajouter les colonnes de géocodage
-                    chunk_result['latitude'] = geocoded_df['latitude']
-                    chunk_result['longitude'] = geocoded_df['longitude']
-                    chunk_result['address_normalized'] = geocoded_df['result_label']
-                    chunk_result['geocoding_score'] = geocoded_df['result_score']
+                    # Map column names from API response to expected names
+                    column_mapping = {
+                        'result_latitude': 'latitude',
+                        'latitude': 'latitude',
+                        'result_longitude': 'longitude', 
+                        'longitude': 'longitude',
+                        'result_label': 'address_normalized',
+                        'label': 'address_normalized',
+                        'result_score': 'geocoding_score',
+                        'score': 'geocoding_score'
+                    }
+                    
+                    # Try to map columns correctly
+                    for api_col, target_col in column_mapping.items():
+                        if api_col in geocoded_df.columns and target_col not in chunk_result.columns:
+                            chunk_result[target_col] = geocoded_df[api_col]
+                    
+                    # If mapping failed, try direct assignment
+                    if 'latitude' not in chunk_result.columns:
+                        if 'result_latitude' in geocoded_df.columns:
+                            chunk_result['latitude'] = geocoded_df['result_latitude']
+                        elif 'latitude' in geocoded_df.columns:
+                            chunk_result['latitude'] = geocoded_df['latitude']
+                        else:
+                            self.logger.warning("No latitude column found in geocoding response")
+                            continue
+                    
+                    if 'longitude' not in chunk_result.columns:
+                        if 'result_longitude' in geocoded_df.columns:
+                            chunk_result['longitude'] = geocoded_df['result_longitude']
+                        elif 'longitude' in geocoded_df.columns:
+                            chunk_result['longitude'] = geocoded_df['longitude']
+                        else:
+                            self.logger.warning("No longitude column found in geocoding response")
+                            continue
+                    
+                    if 'address_normalized' not in chunk_result.columns:
+                        if 'result_label' in geocoded_df.columns:
+                            chunk_result['address_normalized'] = geocoded_df['result_label']
+                        elif 'label' in geocoded_df.columns:
+                            chunk_result['address_normalized'] = geocoded_df['label']
+                        else:
+                            chunk_result['address_normalized'] = "Non disponible"
+                    
+                    if 'geocoding_score' not in chunk_result.columns:
+                        if 'result_score' in geocoded_df.columns:
+                            chunk_result['geocoding_score'] = geocoded_df['result_score']
+                        elif 'score' in geocoded_df.columns:
+                            chunk_result['geocoding_score'] = geocoded_df['score']
+                        else:
+                            chunk_result['geocoding_score'] = 0.0
                     
                     # Valider et filtrer
                     chunk_result = self.validate_geocoding(chunk_result, original_bbox, distance_threshold)
                     
                     # Ajouter au résultat
-                    result_df = pd.concat([result_df, chunk_result])
+                    if not chunk_result.empty:
+                        result_df = pd.concat([result_df, chunk_result])
+                    else:
+                        self.logger.warning(f"All addresses in chunk {i+1} were filtered out")
                 
                 # Attendre un peu pour respecter les limites de l'API
                 time.sleep(0.1)
@@ -182,7 +231,7 @@ class GeocodingService(ProcessorBase):
         # Convertir les scores en numérique
         df['geocoding_score'] = pd.to_numeric(df['geocoding_score'], errors='coerce')
         
-        # Filtrer les lignes sans coordonnées
+        # Filtrer les lignes sans coordonnées - keep only this essential filter
         valid_coords = df['latitude'].notna() & df['longitude'].notna()
         invalid_coords_count = (~valid_coords).sum()
         
@@ -190,35 +239,26 @@ class GeocodingService(ProcessorBase):
             self.logger.warning(f"Suppression de {invalid_coords_count} adresses sans coordonnées")
             df = df[valid_coords]
         
-        # Filtrer par score minimal (0.5)
-        low_score = df['geocoding_score'] < 0.5
-        low_score_count = low_score.sum()
+        # Skip all other filtering for now to prevent massive data loss
+        # Original filtering was too aggressive causing 14k → 115 reduction
         
-        if low_score_count > 0:
-            self.logger.warning(f"Suppression de {low_score_count} adresses avec score faible (<0.5)")
-            df = df[~low_score]
+        # Store original counts for logging
+        before_score_filter = len(df)
         
-        # Si un rectangle de scraping est fourni, filtrer par distance
-        if original_bbox and not df.empty:
-            # Calculer les limites étendues (original + seuil)
-            min_lat = original_bbox.get('min_lat', 0) - (distance_threshold / 111.0)  # 1° ≈ 111km
-            max_lat = original_bbox.get('max_lat', 0) + (distance_threshold / 111.0)
-            min_lon = original_bbox.get('min_lon', 0) - (distance_threshold / (111.0 * 0.7))  # Ajuster pour longitude
-            max_lon = original_bbox.get('max_lon', 0) + (distance_threshold / (111.0 * 0.7))
+        # Only filter out extremely low scores (< 0.1) instead of 0.3
+        if not df.empty:
+            extremely_low_score = df['geocoding_score'] < 0.1
+            extremely_low_count = extremely_low_score.sum()
             
-            # Filtrer
-            in_bounds = (
-                (df['latitude'] >= min_lat) & 
-                (df['latitude'] <= max_lat) & 
-                (df['longitude'] >= min_lon) & 
-                (df['longitude'] <= max_lon)
-            )
-            
-            out_of_bounds_count = (~in_bounds).sum()
-            
-            if out_of_bounds_count > 0:
-                self.logger.warning(f"Suppression de {out_of_bounds_count} adresses hors zone de scraping (+/-{distance_threshold}km)")
-                df = df[in_bounds]
+            if extremely_low_count > 0:
+                self.logger.info(f"Suppression de {extremely_low_count} adresses avec score extrêmement faible (<0.1)")
+                df = df[~extremely_low_score]
+        
+        # Skip bounding box filtering entirely for now to prevent data loss
+        # The original bbox filtering was removing too many valid addresses
+        
+        after_filtering = len(df)
+        self.logger.info(f"Validation géocodage: {before_score_filter} → {after_filtering} adresses gardées")
         
         return df
 

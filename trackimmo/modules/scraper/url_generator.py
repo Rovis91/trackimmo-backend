@@ -122,7 +122,7 @@ class UrlGenerator:
 class AdaptiveUrlGenerator:
     """
     Adaptive URL generator that analyzes price distribution
-    and generates optimal subdivisions.
+    and generates optimal subdivisions with progressive approach.
     """
     
     def __init__(self, base_generator: UrlGenerator):
@@ -133,10 +133,16 @@ class AdaptiveUrlGenerator:
             base_generator: Base URL generator
         """
         self.base_generator = base_generator
-        self.threshold_min = 95  # Minimum threshold for subdivision (raised from 90 to 95)
+        self.threshold_min = 99  # Minimum threshold for subdivision (raised to be closer to 100 limit)
+        self.threshold_optimal_min = 50  # Minimum for optimal subdivision (avoid too small chunks)
         self.max_price = 25000000  # Maximum price (25 million €)
-        self.num_price_ranges = 10  # Total number of price ranges
+        self.num_price_ranges = 8  # Reduced from 10 to 8 (less aggressive subdivision)
         self.max_subdivision_level = 999  # Effectively unlimited subdivision levels
+        
+        # Cache for optimal subdivision levels
+        # Key: (rectangle_center, period, property_type)
+        # Value: {"subdivision_level": int, "success_count": int}
+        self.subdivision_cache = {}
     
     def subdivide_if_needed(
         self, 
@@ -145,33 +151,98 @@ class AdaptiveUrlGenerator:
         properties: List[Dict] = None
     ) -> List[Dict]:
         """
-        Decides whether to subdivide and generates subdivision URLs.
+        Decides whether to subdivide using progressive approach and caching.
+        Only subdivides when truly necessary and tries to maintain 50-99 properties per chunk.
         """
-        # Check if we're close to the limit
-        if self.threshold_min <= property_count:
+        # Only subdivide if we're very close to the 100 property limit
+        if property_count >= self.threshold_min:
             subdivision_level = url_data.get("subdivision_level", 0)
             
+            # Generate cache key for this context
+            cache_key = self._generate_cache_key(url_data)
+            
+            # Check if we have cached optimal subdivision for similar context
+            cached_info = self.subdivision_cache.get(cache_key)
+            if cached_info and cached_info["success_count"] >= 2:
+                # Use cached subdivision level if it has been successful multiple times
+                target_level = cached_info["subdivision_level"]
+                logger.info(f"Using cached subdivision level {target_level} for similar context")
+                
+                # Jump directly to the known successful level
+                if target_level == 1 and subdivision_level == 0:
+                    logger.warning(f"URL has {property_count} properties, applying cached subdivision by type...")
+                    return self._subdivide_by_property_type(url_data)
+                elif target_level == 2 and subdivision_level <= 1:
+                    logger.warning(f"URL has {property_count} properties, applying cached price subdivision...")
+                    return self._progressive_price_subdivision(url_data, properties, progressive_level=1)
+            
+            # Log the subdivision decision with more context
+            # logger.warning(f"URL has {property_count} properties (>={self.threshold_min} threshold), progressive subdivision needed.")
+            
             if subdivision_level == 0:
-                # First step: subdivision by property type
-                logger.warning(f"URL has {property_count} properties, subdividing by type...")
-                return self._subdivide_by_property_type(url_data)
+                # First step: subdivision by property type (only if multiple types)
+                property_types = url_data.get("property_types", [])
+                if len(property_types) > 1:
+                    logger.warning(f"Level 0 -> Level 1: Subdividing by property type...")
+                    result = self._subdivide_by_property_type(url_data)
+                    self._update_cache(cache_key, 1, True)
+                    return result
+                else:
+                    # Skip type subdivision if only one type, go to price
+                    logger.warning(f"Level 0 -> Level 2: Single type, subdividing by price...")
+                    result = self._progressive_price_subdivision(url_data, properties, progressive_level=1)
+                    self._update_cache(cache_key, 2, True)
+                    return result
             
             elif subdivision_level == 1:
-                # Second step: subdivision by price range
-                logger.warning(f"URL has {property_count} properties, subdividing by price...")
-                return self._subdivide_by_dynamic_price_ranges(url_data, properties)
-            
-            elif subdivision_level == 2:
-                # Third step: further subdivision by refined price ranges
-                logger.warning(f"URL has {property_count} properties, refining price subdivision...")
-                return self._refine_price_subdivision(url_data, properties)
+                # Second step: progressive price subdivision
+                logger.warning(f"Level 1 -> Level 2: Progressive price subdivision...")
+                result = self._progressive_price_subdivision(url_data, properties, progressive_level=1)
+                self._update_cache(cache_key, 2, True)
+                return result
             
             else:
-                # Deep subdivision: binary subdivision of price ranges
-                logger.warning(f"URL has {property_count} properties, performing deep subdivision (level {subdivision_level+1})...")
-                return self._deep_price_subdivision(url_data, properties)
+                # Deep progressive subdivision: increase progressive level
+                current_progressive = url_data.get("progressive_level", 1)
+                new_progressive = current_progressive + 1
+                logger.warning(f"Level {subdivision_level} -> Progressive level {new_progressive}: Deep progressive subdivision...")
+                result = self._progressive_price_subdivision(url_data, properties, progressive_level=new_progressive)
+                self._update_cache(cache_key, subdivision_level + 1, True)
+                return result
+        else:
+            # Log when we don't subdivide and update cache for successful non-subdivision
+            logger.info(f"URL has {property_count} properties (< {self.threshold_min} threshold), no subdivision needed.")
+            cache_key = self._generate_cache_key(url_data)
+            self._update_cache(cache_key, 0, True)  # Level 0 = no subdivision needed
         
         return []
+
+    def _generate_cache_key(self, url_data: Dict) -> str:
+        """Generate a cache key for similar contexts."""
+        rect = url_data["rectangle"]
+        period = url_data["period"]
+        property_type = url_data.get("property_type", "all")
+        
+        # Use rectangle center and zoom as identifier
+        rect_id = f"{rect['center_lon']:.3f},{rect['center_lat']:.3f},{rect['zoom']}"
+        
+        return f"{rect_id}|{period}|{property_type}"
+    
+    def _update_cache(self, cache_key: str, subdivision_level: int, success: bool):
+        """Update cache with subdivision result."""
+        if cache_key not in self.subdivision_cache:
+            self.subdivision_cache[cache_key] = {"subdivision_level": subdivision_level, "success_count": 0}
+        
+        if success:
+            self.subdivision_cache[cache_key]["subdivision_level"] = subdivision_level
+            self.subdivision_cache[cache_key]["success_count"] += 1
+        
+        # Limit cache size to prevent memory issues
+        if len(self.subdivision_cache) > 1000:
+            # Remove oldest entries (simple approach)
+            keys_to_remove = list(self.subdivision_cache.keys())[:100]
+            for key in keys_to_remove:
+                del self.subdivision_cache[key]
 
     def _subdivide_by_property_type(self, url_data: Dict) -> List[Dict]:
         """
@@ -255,7 +326,7 @@ class AdaptiveUrlGenerator:
         
         # Check if we're at the API limit (101 properties)
         use_aggressive_division = len(properties) >= 101
-        num_central_divisions = 16 if use_aggressive_division else 12
+        num_central_divisions = 10 if use_aggressive_division else 6  # Reduced from 16/12 to 10/6
         
         # Generate price ranges based on property analysis
         price_ranges = self._generate_optimal_price_ranges(
@@ -347,10 +418,9 @@ class AdaptiveUrlGenerator:
         # Extract prices from the current subset of properties
         prices = [p.get("price", 0) for p in properties if p.get("price", 0) > 0]
         
-        # If we reached the exact API limit (101 properties), use a more aggressive subdivision
-        # strategy to ensure we capture all properties
+        # Determine number of subdivisions based on context
         use_aggressive_division = len(properties) >= 101
-        num_divisions = 6 if use_aggressive_division else 4
+        num_divisions = 8 if use_aggressive_division else 4  # Reduced from 12/8 to 8/4
         
         # If we don't have enough prices to analyze, simply split into equal parts
         if len(prices) < 20:
@@ -550,7 +620,7 @@ class AdaptiveUrlGenerator:
     def _generate_optimal_price_ranges(
         self, 
         properties: List[Dict],
-        num_central_divisions: int = 8
+        num_central_divisions: int = 6  # Reduced from 8 to 6 (less aggressive default)
     ) -> List[Tuple[float, float]]:
         """
         Generates optimal price ranges based on analysis of
@@ -630,3 +700,153 @@ class AdaptiveUrlGenerator:
             (750000, 1000000),     # 750K-1M
             (1000000, 25000000)    # 1M+
         ]
+
+    def _progressive_price_subdivision(
+        self, 
+        url_data: Dict, 
+        properties: List[Dict],
+        progressive_level: int = 1
+    ) -> List[Dict]:
+        """
+        Progressive price subdivision that starts with binary splits and progresses as needed.
+        Aims to keep 50-99 properties per subdivision to optimize extraction.
+        
+        Args:
+            url_data: URL data
+            properties: Extracted properties to analyze
+            progressive_level: Level of progression (1=binary, 2=quad, 3=octal)
+        
+        Returns:
+            List[Dict]: New subdivided URLs
+        """
+        # Get basic information
+        rect = url_data["rectangle"]
+        period = url_data["period"]
+        property_type = url_data["property_type"]
+        property_types = url_data.get("property_types", [])
+        
+        # Get type codes for URL
+        type_codes = [self.base_generator.property_type_mapping[t] for t in property_types 
+                     if t in self.base_generator.property_type_mapping]
+        
+        # Extract prices for analysis
+        prices = [p.get("price", 0) for p in properties if p.get("price", 0) > 0]
+        
+        if len(prices) < 10:
+            logger.warning("Not enough price data for analysis, using binary split")
+            # Default to binary price split
+            num_divisions = 2
+        else:
+            # Calculate optimal number of divisions based on progressive level
+            # Level 1: 2 divisions, Level 2: 4 divisions, Level 3: 8 divisions
+            base_divisions = 2 ** progressive_level
+            
+            # Estimate properties per division
+            estimated_per_division = len(properties) / base_divisions
+            
+            # Adjust divisions to target 50-99 properties per division
+            if estimated_per_division < self.threshold_optimal_min:
+                # Too few per division, reduce divisions
+                num_divisions = max(2, len(properties) // self.threshold_optimal_min)
+                # logger.info(f"Adjusted divisions from {base_divisions} to {num_divisions} to maintain >= {self.threshold_optimal_min} properties per division")
+            elif estimated_per_division > self.threshold_min:
+                # Too many per division, increase divisions
+                num_divisions = min(8, (len(properties) // self.threshold_optimal_min) + 1)
+                # logger.info(f"Adjusted divisions from {base_divisions} to {num_divisions} to avoid > {self.threshold_min} properties per division")
+            else:
+                num_divisions = base_divisions
+        
+        # Get price range
+        min_price = url_data.get("min_price", 0)
+        max_price = url_data.get("max_price", self.max_price)
+        
+        # Generate price ranges
+        if len(prices) >= 20 and num_divisions <= 4:
+            # Use data-driven percentiles for fewer divisions
+            prices.sort()
+            price_ranges = self._generate_percentile_ranges(prices, min_price, max_price, num_divisions)
+        else:
+            # Use equal splits for simplicity with many divisions or little data
+            price_ranges = self._generate_equal_price_ranges(min_price, max_price, num_divisions)
+        
+        # Create URLs
+        result = []
+        base_type = property_type.split('_price_')[0] if '_price_' in property_type else property_type
+        
+        for i, (min_p, max_p) in enumerate(price_ranges):
+            # Format prices for URL
+            min_price_str = str(int(min_p))
+            max_price_str = str(int(max_p)) if i < len(price_ranges) - 1 else str(self.max_price)
+            
+            # Create URL with price filter
+            url_params = {
+                "center": f"{rect['center_lon']};{rect['center_lat']}",
+                "zoom": str(rect['zoom']),
+                "propertytypes": ",".join(type_codes),
+                "minmonthyear": period,
+                "maxmonthyear": period,
+                "minprice": min_price_str,
+                "maxprice": max_price_str
+            }
+            
+            query = urllib.parse.urlencode(url_params)
+            url = f"{self.base_generator.base_url}?{query}"
+            
+            # Create descriptive label
+            range_label = f"{base_type}_price_{min_price_str}_{max_price_str}"
+            
+            # Add to list
+            result.append({
+                "url": url,
+                "rectangle": rect,
+                "property_type": range_label,
+                "period": period,
+                "property_types": property_types,
+                "price_range": f"{min_price_str}-{max_price_str}",
+                "min_price": min_p,
+                "max_price": max_p,
+                "subdivision_level": 2,  # Always level 2 for price subdivision
+                "progressive_level": progressive_level,
+                "is_price_subdivision": True
+            })
+        
+        # Log results
+        ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
+        estimated_per_div = len(properties) // len(price_ranges)
+        # logger.info(f"Progressive subdivision (level {progressive_level}): {len(result)} URLs")
+        # logger.info(f"Target: ~{estimated_per_div} properties per URL (from {len(properties)} total)")
+        # logger.info(f"Price ranges: {', '.join(ranges_str)}")
+        
+        return result
+
+    def _generate_percentile_ranges(self, sorted_prices: List[float], min_price: float, max_price: float, num_divisions: int) -> List[Tuple[float, float]]:
+        """Generate price ranges based on data percentiles."""
+        ranges = []
+        
+        if num_divisions == 2:
+            # Binary split at median
+            median = sorted_prices[len(sorted_prices) // 2]
+            ranges = [(min_price, median), (median, max_price)]
+        elif num_divisions == 4:
+            # Quartile split
+            q1 = sorted_prices[len(sorted_prices) // 4]
+            q2 = sorted_prices[len(sorted_prices) // 2]
+            q3 = sorted_prices[3 * len(sorted_prices) // 4]
+            ranges = [(min_price, q1), (q1, q2), (q2, q3), (q3, max_price)]
+        else:
+            # Fall back to equal ranges
+            ranges = self._generate_equal_price_ranges(min_price, max_price, num_divisions)
+        
+        return ranges
+
+    def _generate_equal_price_ranges(self, min_price: float, max_price: float, num_divisions: int) -> List[Tuple[float, float]]:
+        """Generate equal price ranges."""
+        step = (max_price - min_price) / num_divisions
+        ranges = []
+        
+        for i in range(num_divisions):
+            range_min = min_price + i * step
+            range_max = min_price + (i + 1) * step
+            ranges.append((range_min, range_max))
+        
+        return ranges

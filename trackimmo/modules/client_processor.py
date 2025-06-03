@@ -17,17 +17,18 @@ from trackimmo.utils.email_sender import send_client_notification
 
 logger = get_logger(__name__)
 
-async def process_client_data(client_id: str) -> Dict[str, Any]:
+async def process_client_data(client_id: str, skip_scraping: bool = False) -> Dict[str, Any]:
     """
     Process a client's data and assign new properties.
     
     Args:
         client_id: The client's UUID
+        skip_scraping: If True, skip scraping and only run enrichment on existing data
         
     Returns:
         Dict with results of processing
     """
-    logger.info(f"Processing client {client_id}")
+    logger.info(f"Processing client {client_id}, skip_scraping: {skip_scraping}")
     
     try:
         # 1. Get client data
@@ -35,11 +36,15 @@ async def process_client_data(client_id: str) -> Dict[str, Any]:
         if not client or client["status"] != "active":
             raise ValueError(f"Client {client_id} not found or inactive")
         
-        # 2. Process cities (enrich if needed)
-        await update_client_cities(client)
+        # 2. Process cities (enrich if needed) - only if not skipping scraping
+        if not skip_scraping:
+            await update_client_cities(client)
         
-        # 3. Scrape, enrich and insert properties (only if needed)
-        await scrape_and_enrich_properties_for_client(client)
+        # 3. Scrape, enrich and insert properties (only if needed and not skipping)
+        if skip_scraping:
+            await enrich_existing_scraped_data_for_client(client)
+        else:
+            await scrape_and_enrich_properties_for_client(client)
         
         # 4. Assign properties to client
         assign_count = client.get("addresses_per_report", 10)  # Default 10 if not set
@@ -193,6 +198,69 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
             except Exception as e:
                 logger.error(f"Error processing properties for city {city['city_id']}: {str(e)}")
 
+async def enrich_existing_scraped_data_for_client(client: Dict[str, Any]):
+    """
+    Find existing scraped data and run enrichment on it for a client's cities.
+    
+    Args:
+        client: The client data
+    """
+    if not client.get("chosen_cities") or not client.get("property_type_preferences"):
+        logger.warning(f"Client {client['client_id']} has no chosen cities or property types")
+        return
+    
+    # Look for scraped files in the data/scraped directory
+    scraped_dir = Path("data/scraped")
+    if not scraped_dir.exists():
+        logger.warning("No scraped data directory found")
+        return
+    
+    with DBManager() as db:
+        # Get cities data
+        city_ids = client["chosen_cities"]
+        response = db.get_client().table("cities").select("*").in_("city_id", city_ids).execute()
+        
+        # Look for existing scraped files for each city
+        for city in response.data:
+            try:
+                city_name = city["name"]
+                postal_code = city["postal_code"]
+                
+                # Look for CSV files that match this city
+                # File naming pattern is typically: CityName_PostalCode_*.csv
+                city_files = []
+                for csv_file in scraped_dir.glob("*.csv"):
+                    filename = csv_file.name.lower()
+                    city_name_clean = city_name.lower().replace(" ", "_").replace("-", "_")
+                    
+                    if (city_name_clean in filename or 
+                        postal_code in filename or
+                        city_name.lower() in filename):
+                        city_files.append(csv_file)
+                
+                if not city_files:
+                    logger.info(f"No scraped files found for city {city_name} ({postal_code})")
+                    continue
+                
+                # Process each found file
+                for csv_file in city_files:
+                    logger.info(f"Found scraped file for {city_name}: {csv_file}")
+                    
+                    # Check file size to ensure it has data
+                    if csv_file.stat().st_size < 1000:  # Less than 1KB likely empty
+                        logger.warning(f"Scraped file {csv_file} appears to be empty, skipping")
+                        continue
+                    
+                    # Run enrichment pipeline on this file
+                    logger.info(f"Running enrichment on {csv_file}")
+                    await enrich_and_insert_properties(str(csv_file), city)
+                    
+                if city_files:
+                    logger.info(f"Processed {len(city_files)} scraped files for {city_name}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing existing scraped data for city {city['city_id']}: {str(e)}")
+
 async def enrich_and_insert_properties(csv_file: str, city: Dict[str, Any]):
     """
     Run the enrichment pipeline on scraped properties and insert them into the database.
@@ -215,12 +283,12 @@ async def enrich_and_insert_properties(csv_file: str, city: Dict[str, Any]):
             } if all(k in city for k in ['min_lat', 'max_lat', 'min_lon', 'max_lon']) else None
         }
         
-        # Run enrichment pipeline
+        # Run enrichment pipeline asynchronously
         orchestrator = EnrichmentOrchestrator(config)
-        success = orchestrator.run(
+        success = await orchestrator.run_async(
             input_file=csv_file,
             start_stage=1,  # Start from normalization
-            end_stage=6,    # End at database integration
+            end_stage=7,    # End at database integration (changed from 6 to 7 to include DB integration)
             debug=False     # Don't keep intermediate files
         )
         
