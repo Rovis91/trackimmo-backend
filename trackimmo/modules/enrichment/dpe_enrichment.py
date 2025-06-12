@@ -107,18 +107,26 @@ class DPEEnrichmentService(ProcessorBase):
         os.makedirs(self.dpe_cache_dir, exist_ok=True)
         os.makedirs(self.debug_dir, exist_ok=True)
         
-        # Configure logger
+        # Configure logging with proper level
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.INFO)
+        
+        # Use configured log level instead of hardcoded INFO
+        try:
+            from trackimmo.config import settings
+            log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.ERROR)
+        except ImportError:
+            log_level = logging.ERROR
+            
+        self.logger.setLevel(log_level)
         
         # Avoid duplicate logs by checking if a handler already exists
         if not self.logger.handlers:
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
+            console_handler.setLevel(log_level)
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
-            
+        
         # Disable log propagation to avoid duplicates
         self.logger.propagate = False
             

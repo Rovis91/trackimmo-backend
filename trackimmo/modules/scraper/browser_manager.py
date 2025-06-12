@@ -3,6 +3,8 @@ Browser manager for web scraping.
 Uses Playwright to extract data from ImmoData pages.
 """
 
+import sys
+import os
 import asyncio
 import re
 import logging
@@ -10,6 +12,15 @@ from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 from playwright.async_api import async_playwright, Page
 from bs4 import BeautifulSoup
+
+# Fix Windows event loop policy for Playwright compatibility
+if sys.platform.startswith("win"):
+    # Force WindowsSelectorEventLoop for Playwright compatibility in FastAPI context
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        # Fallback for older Python versions
+        pass
 
 from trackimmo.utils.logger import get_logger
 
@@ -68,17 +79,66 @@ class BrowserManager:
     async def _ensure_browser_initialized(self):
         """Ensure browser is initialized for concurrent processing"""
         if not self._initialized:
-            from playwright.async_api import async_playwright
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True)
-            self._context = await self._browser.new_context(
-                viewport={"width": 1920, "height": 1080},  # Large viewport to ensure content is visible
-                user_agent=self.user_agent,
-                # Additional settings to ensure proper loading
-                ignore_https_errors=True,
-                java_script_enabled=True
-            )
-            self._initialized = True
+            try:
+                from playwright.async_api import async_playwright
+                
+                # Force event loop policy for Windows compatibility
+                if sys.platform.startswith("win"):
+                    try:
+                        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+                    except AttributeError:
+                        pass
+                
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(
+                    headless=True,
+                    # Additional args for Windows compatibility
+                    args=[
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding'
+                    ] if sys.platform.startswith("win") else []
+                )
+                self._context = await self._browser.new_context(
+                    viewport={"width": 1920, "height": 1080},  # Large viewport to ensure content is visible
+                    user_agent=self.user_agent,
+                    # Additional settings to ensure proper loading
+                    ignore_https_errors=True,
+                    java_script_enabled=True
+                )
+                self._initialized = True
+                logger.info("Browser initialized successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize browser: {str(e)}")
+                # Clean up partial initialization
+                await self._cleanup_partial_init()
+                # Re-raise the exception so calling code can handle it
+                raise
+    
+    async def _cleanup_partial_init(self):
+        """Clean up partially initialized browser resources"""
+        try:
+            if hasattr(self, '_context') and self._context:
+                await self._context.close()
+        except:
+            pass
+        
+        try:
+            if hasattr(self, '_browser') and self._browser:
+                await self._browser.close()
+        except:
+            pass
+        
+        try:
+            if hasattr(self, '_playwright') and self._playwright:
+                await self._playwright.stop()
+        except:
+            pass
+        
+        self._initialized = False
     
     async def cleanup(self):
         """Cleanup browser resources"""
@@ -104,42 +164,78 @@ class BrowserManager:
         
         all_properties = []
         
-        async with async_playwright() as p:
-            # Launch browser with improved settings
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},  # Large viewport
-                user_agent=self.user_agent,
-                ignore_https_errors=True,
-                java_script_enabled=True
-            )
+        try:
+            # Force event loop policy for Windows compatibility
+            if sys.platform.startswith("win"):
+                try:
+                    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy()) 
+                except AttributeError:
+                    pass
             
-            try:
-                page = await context.new_page()
+            async with async_playwright() as p:
+                # Launch browser with improved settings for Windows
+                browser_args = []
+                if sys.platform.startswith("win"):
+                    browser_args = [
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding'
+                    ]
                 
-                # Process each URL
-                for index, url_data in enumerate(urls):
-                    url = url_data["url"]
-                    logger.info(f"Processing URL {index+1}/{len(urls)}: {url[:100]}...")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=browser_args
+                )
+                context = await browser.new_context(
+                    viewport={"width": 1920, "height": 1080},  # Large viewport
+                    user_agent=self.user_agent,
+                    ignore_https_errors=True,
+                    java_script_enabled=True
+                )
+                
+                try:
+                    page = await context.new_page()
                     
-                    # Extract properties with retry
-                    properties = await self._extract_from_url(
-                        page, url, url_data, retries=self.max_retries
-                    )
-                    
-                    if properties:
-                        all_properties.extend(properties)
-                        #logger.info(f"Extracted {len(properties)} properties from URL")
-                    else:
-                        logger.warning(f"No properties extracted from URL")
-                    
-                    # Pause between requests
-                    await asyncio.sleep(self.sleep_time)
+                    # Process each URL
+                    for index, url_data in enumerate(urls):
+                        url = url_data["url"]
+                        logger.info(f"Processing URL {index+1}/{len(urls)}: {url[:100]}...")
+                        
+                        # Extract properties with retry
+                        properties = await self._extract_from_url(
+                            page, url, url_data, retries=self.max_retries
+                        )
+                        
+                        if properties:
+                            all_properties.extend(properties)
+                            #logger.info(f"Extracted {len(properties)} properties from URL")
+                        else:
+                            logger.warning(f"No properties extracted from URL")
+                        
+                        # Pause between requests
+                        await asyncio.sleep(self.sleep_time)
+                
+                finally:
+                    # Close browser
+                    try:
+                        await context.close()
+                        await browser.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing browser resources: {str(e)}")
+        
+        except Exception as e:
+            logger.error(f"Critical error in extract_properties: {str(e)}")
+            logger.error(f"This might be due to Windows/Playwright compatibility issues")
             
-            finally:
-                # Close browser
-                await context.close()
-                await browser.close()
+            # Return empty list instead of crashing
+            # The calling code should handle this gracefully
+            if "NotImplementedError" in str(e) or "subprocess" in str(e).lower():
+                logger.error("This appears to be a Windows event loop compatibility issue")
+                logger.error("Consider running the script directly instead of through the API")
+            
+            return []
         
         logger.info(f"Total properties extracted: {len(all_properties)}")
         return all_properties
@@ -168,7 +264,7 @@ class BrowserManager:
             await page.goto(url, wait_until="networkidle", timeout=60000)
             
             # Wait for main container to load
-            await page.wait_for_selector(self.SELECTORS["container"], timeout=15000)
+            await page.wait_for_selector(self.SELECTORS["container"], timeout=60000)
             
             # Additional wait to ensure dynamic content loads and skeleton elements are replaced
             # Wait for actual property elements (not skeleton ones)

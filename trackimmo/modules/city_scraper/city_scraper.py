@@ -3,16 +3,28 @@ City data scraper for TrackImmo.
 Extracts city information and average property prices from ImmoData.
 """
 
+import sys
+import os
 import asyncio
 import re
 import logging
 import requests
 import unicodedata
 from typing import Dict, Any, Optional, Tuple
+from urllib.parse import quote
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
 from trackimmo.utils.logger import get_logger
+
+# Fix Windows event loop policy for Playwright compatibility
+if sys.platform.startswith("win"):
+    # Force WindowsSelectorEventLoop for Playwright compatibility in FastAPI context
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except AttributeError:
+        # Fallback for older Python versions
+        pass
 
 logger = get_logger(__name__)
 

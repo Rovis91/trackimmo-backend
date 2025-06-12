@@ -220,17 +220,31 @@ class ImmoDataScraper:
         df = pd.DataFrame(properties)
         logger.info(f"Deduplicating {len(df)} properties")
         
-        # Identify essential columns for deduplication (exclude postal_code)
+        # FIRST: Remove duplicates by source_url (immodata_url) - this is critical for DB uniqueness
+        if 'property_url' in df.columns:
+            url_duplicates_before = len(df)
+            df = df.drop_duplicates(subset=['property_url'])
+            url_duplicates_removed = url_duplicates_before - len(df)
+            if url_duplicates_removed > 0:
+                logger.info(f"Removed {url_duplicates_removed} properties with duplicate URLs")
+        
+        # SECOND: Identify essential columns for property deduplication (exclude postal_code)
         duplicate_keys = ["address", "city", "price", "surface", "rooms", "sale_date"]
         available_keys = [key for key in duplicate_keys if key in df.columns]
         
         if not available_keys:
             logger.warning("Unable to deduplicate: essential columns missing")
-            return properties
+            return df.to_dict("records")
         
-        # Deduplicate on essential columns
+        # Deduplicate on essential columns (this catches properties that are the same but have different URLs)
+        df_before_property_dedup = len(df)
         df_unique = df.drop_duplicates(subset=available_keys)
-        logger.info(f"Deduplication: {len(df) - len(df_unique)} duplicates removed")
+        property_duplicates_removed = df_before_property_dedup - len(df_unique)
+        
+        if property_duplicates_removed > 0:
+            logger.info(f"Removed {property_duplicates_removed} properties with duplicate property details")
+        
+        logger.info(f"Total deduplication: {len(properties) - len(df_unique)} duplicates removed ({len(df_unique)} unique properties remaining)")
         
         return df_unique.to_dict("records")
     
@@ -252,8 +266,9 @@ class ImmoDataScraper:
         # Create DataFrame and reorganize columns
         df = pd.DataFrame(properties)
         
-        # Remove unwanted columns if present
-        for col in ["postal_code", "source_url"]:
+        # DO NOT remove source_url/property_url - it's needed for DB deduplication
+        # Only remove postal_code as it's not needed for enrichment
+        for col in ["postal_code"]:
             if col in df.columns:
                 df = df.drop(columns=[col])
         
@@ -262,16 +277,16 @@ class ImmoDataScraper:
         if all(col in df.columns for col in main_cols):
             df = df[~((df[main_cols].isnull() | (df[main_cols] == 0) | (df[main_cols] == "")).all(axis=1))]
         
-        # Reorganize/rename columns if they exist
+        # Reorganize/rename columns if they exist - keep property_url as source_url for enrichment
         column_mapping = {
-            "address": "address",
-            "city": "city",
+            "address": "address_raw",  # Rename to match enrichment expectation
+            "city": "city_name",       # Rename to match enrichment expectation  
             "price": "price",
             "surface": "surface",
             "rooms": "rooms",
             "sale_date": "sale_date",
             "property_type": "property_type",
-            "property_url": "property_url"
+            "property_url": "source_url"  # Keep as source_url for enrichment pipeline
         }
         
         # Apply mapping only for existing columns
@@ -289,5 +304,5 @@ class ImmoDataScraper:
         
         # Reorganize and save
         df = df[final_columns]
-        logger.info(f"Exporting {len(df)} properties to CSV")
+        logger.info(f"Exporting {len(df)} properties to CSV (including source_url for DB deduplication)")
         df.to_csv(output_file, index=False)

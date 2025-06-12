@@ -27,7 +27,15 @@ class DBIntegrationService(ProcessorBase):
         
         # Configure logging
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging.INFO)
+        
+        # Use configured log level instead of hardcoded INFO
+        try:
+            from trackimmo.config import settings
+            log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.ERROR)
+        except ImportError:
+            log_level = logging.ERROR
+            
+        self.logger.setLevel(log_level)
         
         # Disable verbose HTTP logging
         logging.getLogger('httpcore.connection').setLevel(logging.WARNING)
@@ -135,6 +143,15 @@ class DBIntegrationService(ProcessorBase):
                 try:
                     # Insert into addresses table
                     address_id = self.insert_address(supabase_client, row)
+                    
+                    # Skip if address insertion was skipped due to duplicate URL
+                    if address_id is None:
+                        report_entry['success'] = True  # It's a success, just skipped
+                        report_entry['skipped'] = True
+                        report_entry['reason'] = 'Duplicate URL skipped'
+                        batch_report.append(report_entry)
+                        continue
+                    
                     report_entry['address_id'] = address_id
                     
                     # If DPE present, insert into dpe table
@@ -162,6 +179,19 @@ class DBIntegrationService(ProcessorBase):
         Returns:
             str: Address ID
         """
+        # Check if this URL already exists in database to avoid duplicate constraint violations
+        source_url = property_data.get('source_url')
+        if pd.notna(source_url) and source_url:
+            try:
+                # Check if URL already exists
+                existing_response = supabase_client.table('addresses').select('address_id').eq('immodata_url', source_url).execute()
+                if existing_response.data and len(existing_response.data) > 0:
+                    existing_id = existing_response.data[0]['address_id']
+                    self.logger.debug(f"Property with URL {source_url} already exists (ID: {existing_id}), skipping insertion")
+                    return existing_id
+            except Exception as e:
+                self.logger.warning(f"Could not check for existing URL {source_url}: {str(e)}")
+        
         # Generate UUID
         address_id = str(uuid.uuid4())
         
@@ -208,25 +238,45 @@ class DBIntegrationService(ProcessorBase):
             'surface': surface,
             'rooms': rooms,
             'price': price,
-            'immodata_url': property_data.get('source_url') if pd.notna(property_data.get('source_url')) else None,
+            'immodata_url': source_url if pd.notna(source_url) else None,
             'estimated_price': estimated_price,
             'geoposition': json.dumps(geojson) if geojson else None,
             'created_at': datetime.now().isoformat(),
             'updated_at': datetime.now().isoformat()
         }
         
-        # Execute insertion
+        # Execute insertion with error handling for duplicates
         try:
-            response = supabase_client.table('addresses').upsert(address_data).execute()
+            response = supabase_client.table('addresses').insert(address_data).execute()
             
             if response.data and len(response.data) > 0:
                 return address_id
             else:
                 self.logger.warning(f"No response from API for address insertion {address_id}")
                 return address_id  # Return ID anyway as insertion probably succeeded
+                
         except Exception as e:
-            self.logger.error(f"Error inserting address: {str(e)}")
-            raise
+            error_str = str(e)
+            # Handle duplicate URL constraint violations gracefully
+            if "duplicate key value violates unique constraint" in error_str and "unique_immodata_url" in error_str:
+                self.logger.debug(f"Duplicate URL constraint violation for {source_url}, attempting to find existing record")
+                try:
+                    # Try to find the existing record
+                    existing_response = supabase_client.table('addresses').select('address_id').eq('immodata_url', source_url).execute()
+                    if existing_response.data and len(existing_response.data) > 0:
+                        existing_id = existing_response.data[0]['address_id']
+                        self.logger.debug(f"Found existing record with ID: {existing_id}")
+                        return existing_id
+                except Exception as find_error:
+                    self.logger.warning(f"Could not find existing record for duplicate URL: {str(find_error)}")
+                
+                # If we can't find the existing record, log and skip
+                self.logger.warning(f"Skipping duplicate URL {source_url}")
+                return None
+            else:
+                # For other errors, log and re-raise
+                self.logger.error(f"Error inserting address: {error_str}")
+                raise
     
     def insert_dpe(self, supabase_client, property_data: pd.Series, address_id: str) -> None:
         """

@@ -133,7 +133,7 @@ async def update_client_cities(client: Dict[str, Any]):
                         "region": city_data.get("region"),
                         "house_price_avg": city_data.get("house_price_avg"),
                         "apartment_price_avg": city_data.get("apartment_price_avg"),
-                        "last_scraped": datetime.now().isoformat(),
+                        "last_city_scraped": datetime.now().isoformat(),
                         "updated_at": datetime.now().isoformat()
                     }).eq("city_id", city_id).execute()
                     
@@ -160,12 +160,12 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
         for city in response.data:
             try:
                 # First check if city was recently scraped for properties (within last year)
-                last_scraped = city.get("last_scraped")
+                last_property_scraped = city.get("last_property_scraped")
                 recently_scraped = False
                 
-                if last_scraped:
+                if last_property_scraped:
                     try:
-                        last_scraped_date = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
+                        last_scraped_date = datetime.fromisoformat(last_property_scraped.replace('Z', '+00:00'))
                         days_since_scraped = (datetime.now() - last_scraped_date.replace(tzinfo=None)).days
                         if days_since_scraped <= 365:
                             recently_scraped = True
@@ -173,7 +173,9 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
                         else:
                             logger.info(f"City {city['name']} properties were scraped {days_since_scraped} days ago - may need property scraping")
                     except (ValueError, TypeError) as e:
-                        logger.warning(f"Could not parse last_scraped date for {city['name']}: {last_scraped} - {str(e)}")
+                        logger.warning(f"Could not parse last_property_scraped date for {city['name']}: {last_property_scraped} - {str(e)}")
+                else:
+                    logger.info(f"City {city['name']} has never been scraped for properties")
                 
                 # Skip property scraping if recently scraped
                 if recently_scraped:
@@ -216,15 +218,15 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
                     # Now run the enrichment pipeline to process and insert the scraped data
                     await enrich_and_insert_properties(result_file, city)
                     
-                    # Update last_scraped timestamp for properties scraping
+                    # ONLY update last_property_scraped timestamp AFTER successful enrichment
                     try:
                         db.get_client().table("cities").update({
-                            "last_scraped": datetime.now().isoformat(),
+                            "last_property_scraped": datetime.now().isoformat(),  # Nouveau champ pour properties
                             "updated_at": datetime.now().isoformat()
                         }).eq("city_id", city["city_id"]).execute()
-                        logger.info(f"Updated last_scraped timestamp for {city['name']} after property scraping")
+                        logger.info(f"Updated last_property_scraped timestamp for {city['name']} after enrichment completed")
                     except Exception as e:
-                        logger.warning(f"Could not update last_scraped for {city['name']}: {str(e)}")
+                        logger.warning(f"Could not update last_property_scraped for {city['name']}: {str(e)}")
                     
                 else:
                     logger.info(f"Sufficient properties exist for {city['name']}, skipping scrape")

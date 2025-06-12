@@ -5,8 +5,21 @@ This module sets up the FastAPI application.
 """
 import sys
 import asyncio
+import os
+
+# Critical: Fix Windows event loop policy BEFORE any other imports
+# This must be done before importing any modules that use asyncio
 if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        # Set the event loop policy to WindowsSelectorEventLoop for Playwright compatibility
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
+        # Also set some Windows-specific environment variables for better subprocess handling
+        os.environ.setdefault('PYTHONASYNCIODEBUG', '0')
+        
+        print("✓ Windows event loop policy configured for Playwright compatibility")
+    except Exception as e:
+        print(f"Warning: Could not set Windows event loop policy: {e}")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

@@ -3,6 +3,7 @@ import logging
 import argparse
 from typing import Dict, Any, Optional, List
 import asyncio
+import pandas as pd
 
 # Importer les processeurs
 from .processor_base import ProcessorBase
@@ -49,6 +50,9 @@ class EnrichmentOrchestrator:
             'price_estimated': os.path.join(self.processing_dir, 'price_estimated.csv'),
             'integration_report': os.path.join(self.output_dir, 'integration_report.csv')
         }
+        
+        # Initialize DBManager
+        self.db_manager = DBManager()
     
     def run(self, input_file: str = None, start_stage: int = 1, end_stage: int = 7, debug: bool = False) -> bool:
         """
@@ -329,6 +333,137 @@ class EnrichmentOrchestrator:
             import traceback
             self.logger.error(traceback.format_exc())
             return False
+
+    async def process(self, **kwargs) -> bool:
+        """
+        Process enrichment pipeline
+        
+        Args:
+            **kwargs: Additional arguments
+            
+        Returns:
+            bool: True if successful
+        """
+        batch_size = kwargs.get("batch_size", 1000)
+        
+        try:
+            # Read the CSV
+            self.logger.info("Reading CSV data...")
+            df = pd.read_csv(self.file_paths['raw'])
+            self.logger.info(f"Read {len(df)} rows from CSV")
+            
+            # Pre-filter out URLs that already exist in database to avoid duplicates
+            df = await self._filter_existing_urls(df)
+            if len(df) == 0:
+                self.logger.info("All properties already exist in database, skipping enrichment")
+                return True
+            
+            # Data normalization
+            self.logger.info("Starting data normalization...")
+            normalizer = DataNormalizer(self.file_paths['raw'], self.file_paths['normalized'])
+            success = normalizer.process()
+            if not success:
+                self.logger.error("Data normalization failed")
+                return False
+            
+            # City resolution
+            self.logger.info("Starting city resolution...")
+            city_resolver = CityResolver(normalizer.output_path, self.file_paths['cities_resolved'])
+            success = await city_resolver.process()
+            if not success:
+                self.logger.error("City resolution failed")
+                return False
+            
+            # Geocoding
+            self.logger.info("Starting geocoding...")
+            geocoding_service = GeocodingService(city_resolver.output_path, self.file_paths['geocoded'])
+            success = geocoding_service.process(batch_size=batch_size)
+            if not success:
+                self.logger.error("Geocoding failed")
+                return False
+            
+            # DPE enrichment
+            self.logger.info("Starting DPE enrichment...")
+            dpe_enrichment = DPEEnrichmentService(geocoding_service.output_path, self.file_paths['dpe_enriched'])
+            success = await dpe_enrichment.process()
+            if not success:
+                self.logger.error("DPE enrichment failed")
+                return False
+            
+            # Price estimation
+            self.logger.info("Starting price estimation...")
+            price_estimator = PriceEstimationService(self.file_paths['dpe_enriched'], self.file_paths['price_estimated'])
+            success = price_estimator.process()
+            if not success:
+                self.logger.error("Price estimation failed")
+                return False
+            
+            # Database integration
+            self.logger.info("Starting database integration...")
+            db_integrator = DBIntegrationService(self.file_paths['price_estimated'], self.file_paths['integration_report'])
+            success = db_integrator.process(batch_size=batch_size)
+            if not success:
+                self.logger.error("Database integration failed")
+                return False
+            
+            self.logger.info("Enrichment pipeline completed successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error in enrichment pipeline: {str(e)}")
+            return False
+    
+    async def _filter_existing_urls(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filter out properties with URLs that already exist in the database.
+        
+        Args:
+            df: DataFrame with properties
+            
+        Returns:
+            pd.DataFrame: Filtered DataFrame without existing URLs
+        """
+        if 'source_url' not in df.columns or df['source_url'].isna().all():
+            self.logger.warning("No source_url column found or all URLs are null, cannot filter existing URLs")
+            return df
+        
+        # Get non-null URLs
+        urls_to_check = df[df['source_url'].notna()]['source_url'].unique().tolist()
+        if not urls_to_check:
+            self.logger.warning("No valid URLs found for duplicate checking")
+            return df
+        
+        self.logger.info(f"Checking for {len(urls_to_check)} existing URLs in database...")
+        
+        try:
+            with self.db_manager as db:
+                # Check URLs in batches to avoid query limits
+                existing_urls = set()
+                batch_size = 100
+                
+                for i in range(0, len(urls_to_check), batch_size):
+                    batch_urls = urls_to_check[i:i+batch_size]
+                    
+                    # Query for existing URLs
+                    response = db.get_client().table('addresses').select('immodata_url').in_('immodata_url', batch_urls).execute()
+                    
+                    if response.data:
+                        batch_existing = {row['immodata_url'] for row in response.data if row['immodata_url']}
+                        existing_urls.update(batch_existing)
+                
+                if existing_urls:
+                    self.logger.info(f"Found {len(existing_urls)} URLs already in database, filtering them out")
+                    # Filter out rows with existing URLs
+                    df_filtered = df[~df['source_url'].isin(existing_urls)]
+                    self.logger.info(f"Filtered from {len(df)} to {len(df_filtered)} properties ({len(df) - len(df_filtered)} duplicates removed)")
+                    return df_filtered
+                else:
+                    self.logger.info("No existing URLs found, proceeding with all properties")
+                    return df
+                    
+        except Exception as e:
+            self.logger.warning(f"Could not check for existing URLs: {str(e)}, proceeding with all properties")
+            return df
 
 
 def main():

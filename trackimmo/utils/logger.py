@@ -26,8 +26,16 @@ def get_logger(name):
     # Ne pas reconfigurer si déjà fait
     if logger.handlers:
         return logger
+    
+    # Import settings here to avoid circular imports
+    try:
+        from trackimmo.config import settings
+        log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.ERROR)
+    except ImportError:
+        # Fallback if settings not available
+        log_level = logging.ERROR
         
-    logger.setLevel(logging.INFO)
+    logger.setLevel(log_level)
     
     # Formatage
     formatter = logging.Formatter(
@@ -37,10 +45,11 @@ def get_logger(name):
     
     # Handler console
     console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
-    # Handler fichier
+    # Handler fichier (toujours tous les niveaux pour débugger au besoin)
     file_handler = logging.FileHandler(LOG_DIR / f"{name.split('.')[-1]}.log")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
