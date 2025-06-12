@@ -98,7 +98,7 @@ async def update_client_cities(client: Dict[str, Any]):
                 
             city = response.data[0]
             
-            # Check if city needs updating (older than 3 months or missing data)
+            # Check if city needs updating (older than 1 year or missing data)
             last_scraped = city.get("last_scraped")
             needs_update = False
             
@@ -107,8 +107,12 @@ async def update_client_cities(client: Dict[str, Any]):
             else:
                 try:
                     last_scraped_date = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
-                    if (datetime.now() - last_scraped_date).days > 90:
+                    days_since_scraped = (datetime.now() - last_scraped_date.replace(tzinfo=None)).days
+                    if days_since_scraped > 365:
                         needs_update = True
+                        logger.info(f"City {city['name']} was scraped {days_since_scraped} days ago - needs update")
+                    else:
+                        logger.info(f"City {city['name']} was scraped {days_since_scraped} days ago - still fresh")
                 except (ValueError, TypeError):
                     needs_update = True
             
@@ -155,9 +159,31 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
         # Check if we have enough properties for each city
         for city in response.data:
             try:
-                # Count existing properties for this city in the age range we need (6-8 years)
-                min_date = (datetime.now() - timedelta(days=8*365)).strftime("%Y-%m-%d")
-                max_date = (datetime.now() - timedelta(days=6*365)).strftime("%Y-%m-%d")
+                # First check if city was recently scraped for properties (within last year)
+                last_scraped = city.get("last_scraped")
+                recently_scraped = False
+                
+                if last_scraped:
+                    try:
+                        last_scraped_date = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
+                        days_since_scraped = (datetime.now() - last_scraped_date.replace(tzinfo=None)).days
+                        if days_since_scraped <= 365:
+                            recently_scraped = True
+                            logger.info(f"City {city['name']} properties were scraped {days_since_scraped} days ago - skipping property scraping (less than 365 days)")
+                        else:
+                            logger.info(f"City {city['name']} properties were scraped {days_since_scraped} days ago - may need property scraping")
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Could not parse last_scraped date for {city['name']}: {last_scraped} - {str(e)}")
+                
+                # Skip property scraping if recently scraped
+                if recently_scraped:
+                    logger.info(f"Skipping property scraping for {city['name']} - recently scraped")
+                    continue
+                
+                # Count existing properties for this city in the database
+                # Use broader date range to include all potentially useful properties
+                min_date = "2014-01-01"  # Start from 2014 to match scraper range
+                max_date = datetime.now().strftime("%Y-%m-%d")  # Up to today
                 
                 count_response = db.get_client().table("addresses").select("address_id", count="exact") \
                     .eq("city_id", city["city_id"]) \
@@ -167,7 +193,7 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
                     .execute()
                 
                 existing_count = count_response.count or 0
-                logger.info(f"City {city['name']}: {existing_count} existing properties in 6-8 year range")
+                logger.info(f"City {city['name']}: {existing_count} existing properties in database (2014-today)")
                 
                 # If we have less than 50 properties, scrape more
                 if existing_count < 50:
@@ -175,22 +201,30 @@ async def scrape_and_enrich_properties_for_client(client: Dict[str, Any]):
                     
                     # Initialize scraper
                     scraper = ImmoDataScraper()
-                    # Set date range for 6-8 years ago
-                    start_date = (datetime.now() - timedelta(days=8*365)).strftime("%m/%Y")
-                    end_date = (datetime.now() - timedelta(days=6*365)).strftime("%m/%Y")
+                    # Use default date range from config settings
+                    # This ensures consistency with the centralized configuration
                     
-                    # Scrape properties (async)
+                    # Scrape properties (async) - let scraper use its default date range from config
                     result_file = await scraper.scrape_city_async(
                         city_name=city["name"],
                         postal_code=city["postal_code"],
-                        property_types=client["property_type_preferences"],
-                        start_date=start_date,
-                        end_date=end_date
+                        property_types=client["property_type_preferences"]
+                        # No start_date and end_date specified - use config defaults
                     )
                     logger.info(f"Scraped properties for {city['name']} saved to {result_file}")
                     
                     # Now run the enrichment pipeline to process and insert the scraped data
                     await enrich_and_insert_properties(result_file, city)
+                    
+                    # Update last_scraped timestamp for properties scraping
+                    try:
+                        db.get_client().table("cities").update({
+                            "last_scraped": datetime.now().isoformat(),
+                            "updated_at": datetime.now().isoformat()
+                        }).eq("city_id", city["city_id"]).execute()
+                        logger.info(f"Updated last_scraped timestamp for {city['name']} after property scraping")
+                    except Exception as e:
+                        logger.warning(f"Could not update last_scraped for {city['name']}: {str(e)}")
                     
                 else:
                     logger.info(f"Sufficient properties exist for {city['name']}, skipping scrape")

@@ -46,7 +46,7 @@ class BrowserManager:
         'autres': 'other'
     }
     
-    def __init__(self, max_retries: int = 3, sleep_time: float = 1.0):
+    def __init__(self, max_retries: int = 3, sleep_time: float = 0.1):
         """
         Initialize the browser manager.
         
@@ -60,6 +60,35 @@ class BrowserManager:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+        # Shared browser context for reuse
+        self._browser = None
+        self._context = None
+        self._initialized = False
+    
+    async def _ensure_browser_initialized(self):
+        """Ensure browser is initialized for concurrent processing"""
+        if not self._initialized:
+            from playwright.async_api import async_playwright
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=True)
+            self._context = await self._browser.new_context(
+                viewport={"width": 1920, "height": 1080},  # Large viewport to ensure content is visible
+                user_agent=self.user_agent,
+                # Additional settings to ensure proper loading
+                ignore_https_errors=True,
+                java_script_enabled=True
+            )
+            self._initialized = True
+    
+    async def cleanup(self):
+        """Cleanup browser resources"""
+        if self._context:
+            await self._context.close()
+        if self._browser:
+            await self._browser.close()
+        if hasattr(self, '_playwright'):
+            await self._playwright.stop()
+        self._initialized = False
     
     async def extract_properties(self, urls: List[Dict]) -> List[Dict[str, Any]]:
         """
@@ -76,11 +105,13 @@ class BrowserManager:
         all_properties = []
         
         async with async_playwright() as p:
-            # Launch browser
+            # Launch browser with improved settings
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=self.user_agent
+                viewport={"width": 1920, "height": 1080},  # Large viewport
+                user_agent=self.user_agent,
+                ignore_https_errors=True,
+                java_script_enabled=True
             )
             
             try:
@@ -133,11 +164,35 @@ class BrowserManager:
             List[Dict]: List of extracted properties
         """
         try:
-            # Navigate to URL
+            # Navigate to URL with proper waiting
             await page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # Wait for content to load
-            await page.wait_for_selector(self.SELECTORS["container"], timeout=10000)
+            # Wait for main container to load
+            await page.wait_for_selector(self.SELECTORS["container"], timeout=15000)
+            
+            # Additional wait to ensure dynamic content loads and skeleton elements are replaced
+            # Wait for actual property elements (not skeleton ones)
+            try:
+                # Wait for non-skeleton property elements to appear
+                await page.wait_for_function(
+                    """() => {
+                        const properties = document.querySelectorAll('div.border-b.border-b-gray-100');
+                        // Check if we have real properties (not skeleton loading elements)
+                        for (let prop of properties) {
+                            if (!prop.querySelector('.skeleton') && prop.textContent.trim().length > 50) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }""",
+                    timeout=20000
+                )
+            except:
+                # If no non-skeleton elements found, wait a bit more for page to finish loading
+                await asyncio.sleep(3)
+            
+            # Additional wait for any remaining JavaScript
+            await page.wait_for_load_state("networkidle", timeout=10000)
             
             # Get HTML content
             content = await page.content()
@@ -150,7 +205,7 @@ class BrowserManager:
             
             if retries > 0:
                 logger.info(f"Retrying... ({retries} attempts left)")
-                await asyncio.sleep(2)  # Delay before retry
+                await asyncio.sleep(3)  # Longer delay before retry
                 return await self._extract_from_url(page, url, url_data, retries - 1)
             
             return []
@@ -180,9 +235,30 @@ class BrowserManager:
             # Find all properties
             property_elements = container.select(self.SELECTORS["property"])
             
-            logger.info(f"Found {len(property_elements)} property elements")
-            
+            # Filter out skeleton/loading elements
+            real_property_elements = []
             for element in property_elements:
+                # Skip if element contains skeleton loading indicators
+                if element.select_one('.skeleton'):
+                    logger.debug("Skipping skeleton element")
+                    continue
+                    
+                # Skip if element appears to be empty or just whitespace
+                text_content = element.get_text(strip=True)
+                if len(text_content) < 20:  # Too short to be a real property
+                    logger.debug("Skipping element with insufficient content")
+                    continue
+                    
+                # Skip if element contains only hidden content
+                if 'hidden' in element.get('class', []):
+                    logger.debug("Skipping hidden element")
+                    continue
+                    
+                real_property_elements.append(element)
+            
+            logger.info(f"Found {len(property_elements)} total elements, {len(real_property_elements)} real property elements")
+            
+            for element in real_property_elements:
                 try:
                     # Extract essential information
                     address_elem = element.select_one(self.SELECTORS["address"])
@@ -500,71 +576,57 @@ class BrowserManager:
         all_properties = []
         was_subdivided = False
         
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=self.user_agent
+        # Use shared browser context for better performance
+        await self._ensure_browser_initialized()
+        page = await self._context.new_page()
+        
+        try:
+            # Extract properties with retry
+            properties = await self._extract_from_url(
+                page, url, url_data, retries=self.max_retries
             )
             
-            try:
-                page = await context.new_page()
+            property_count = len(properties)
+            logger.info(f"Extracted {property_count} properties from URL")
+            
+            # Always start by collecting the properties from this level
+            all_properties.extend(properties)
+            
+            # Check if we need further subdivision (when we hit the 101 property limit)
+            # Using progressive subdivision approach with caching
+            if adaptive_generator and property_count >= 99:
                 
-                # Extract properties with retry
-                properties = await self._extract_from_url(
-                    page, url, url_data, retries=self.max_retries
+                # Log subdivision decision with progressive context
+                subdivision_level = url_data.get("subdivision_level", 0)
+                progressive_level = url_data.get("progressive_level", 1)
+                
+                # Pass extracted properties for appropriate subdivision
+                subdivided_urls = adaptive_generator.subdivide_if_needed(
+                    url_data, property_count, properties
                 )
                 
-                property_count = len(properties)
-                logger.info(f"Extracted {property_count} properties from URL")
-                
-                # Always start by collecting the properties from this level
-                all_properties.extend(properties)
-                
-                # Check if we need further subdivision (when we hit the 101 property limit)
-                # Using progressive subdivision approach with caching
-                if adaptive_generator and property_count >= 99:
+                if subdivided_urls:
+                    logger.info(f"URL subdivided into {len(subdivided_urls)} new URLs")
+                    was_subdivided = True
                     
-                    # Log subdivision decision with progressive context
-                    subdivision_level = url_data.get("subdivision_level", 0)
-                    progressive_level = url_data.get("progressive_level", 1)
-                    
-                    # logger.warning(f"Progressive subdivision triggered: {property_count} properties >= 99 threshold")
-                    # if subdivision_level == 0:
-                    #     logger.warning(f"Level 0: Subdividing by PROPERTY TYPE or progressive PRICE...")
-                    # elif subdivision_level == 1:
-                    #     logger.warning(f"Level 1: Progressive PRICE subdivision...")
-                    # else:
-                    #     logger.warning(f"Level {subdivision_level}: Deep progressive subdivision (progressive level {progressive_level})...")
+                    # Process each subdivision
+                    for sub_url_data in subdivided_urls:
+                        sub_props, sub_count, _ = await self.extract_properties_with_count(
+                            sub_url_data, 
+                            adaptive_generator, 
+                            recursion_depth + 1
+                        )
                         
-                    # Pass extracted properties for appropriate subdivision
-                    subdivided_urls = adaptive_generator.subdivide_if_needed(
-                        url_data, property_count, properties
-                    )
-                    
-                    if subdivided_urls:
-                        logger.info(f"URL subdivided into {len(subdivided_urls)} new URLs")
-                        was_subdivided = True
+                        # Always collect properties from subdivisions
+                        if sub_props:
+                            all_properties.extend(sub_props)
+                            logger.info(f"Added {len(sub_props)} properties from subdivision {sub_url_data['property_type']}")
                         
-                        # Process each subdivision
-                        for sub_url_data in subdivided_urls:
-                            sub_props, sub_count, _ = await self.extract_properties_with_count(
-                                sub_url_data, 
-                                adaptive_generator, 
-                                recursion_depth + 1
-                            )
-                            
-                            # Always collect properties from subdivisions
-                            if sub_props:
-                                all_properties.extend(sub_props)
-                                logger.info(f"Added {len(sub_props)} properties from subdivision {sub_url_data['property_type']}")
-                            
-                            # Pause between requests
-                            await asyncio.sleep(self.sleep_time)
-            
-            finally:
-                await context.close()
-                await browser.close()
+                        # Pause between requests
+                        await asyncio.sleep(self.sleep_time)
+        
+        finally:
+            await page.close()
         
         # Always return all properties collected, the count of properties at this level,
         # and whether this level was subdivided

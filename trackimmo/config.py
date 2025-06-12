@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     SCRAPER_BROWSER_POOL_SIZE: int = 30
     SCRAPER_BROWSER_TIMEOUT: int = 60
     
+    # Scraping date range configuration
+    SCRAPER_DEFAULT_START_DATE: str = "01/2014"  # Format: MM/YYYY
+    SCRAPER_DEFAULT_END_DATE: str = "12/2024"    # Format: MM/YYYY
+    
     # Client processing settings
     DEFAULT_ADDRESSES_PER_REPORT: int = 10
     MIN_PROPERTY_AGE_YEARS: int = 6

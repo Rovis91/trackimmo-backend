@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .url_generator import AdaptiveUrlGenerator
 
 from trackimmo.utils.logger import get_logger
+from trackimmo.config import settings
 from .geo_divider import GeoDivider
 from .url_generator import UrlGenerator
 from .browser_manager import BrowserManager
@@ -46,8 +47,8 @@ class ImmoDataScraper:
         city_name: str,
         postal_code: str,
         property_types: Optional[List[str]] = None,
-        start_date: str = "01/2014",
-        end_date: str = "06/2024",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         output_file: Optional[str] = None
     ) -> str:
         """
@@ -57,6 +58,10 @@ class ImmoDataScraper:
         logger.info(f"Starting scraping for {city_name} ({postal_code})")
         if not property_types:
             property_types = ["house", "apartment"]
+        if start_date is None:
+            start_date = settings.SCRAPER_DEFAULT_START_DATE
+        if end_date is None:
+            end_date = settings.SCRAPER_DEFAULT_END_DATE
         if not output_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = self.output_dir / f"{city_name}_{postal_code}_{timestamp}.csv"
@@ -92,8 +97,8 @@ class ImmoDataScraper:
         city_name: str,
         postal_code: str,
         property_types: Optional[List[str]] = None,
-        start_date: str = "01/2014",
-        end_date: str = "06/2024",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         output_file: Optional[str] = None
     ) -> str:
         """
@@ -102,6 +107,10 @@ class ImmoDataScraper:
         logger.info(f"Starting scraping for {city_name} ({postal_code}) [async]")
         if not property_types:
             property_types = ["house", "apartment"]
+        if start_date is None:
+            start_date = settings.SCRAPER_DEFAULT_START_DATE
+        if end_date is None:
+            end_date = settings.SCRAPER_DEFAULT_END_DATE
         if not output_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_file = self.output_dir / f"{city_name}_{postal_code}_{timestamp}.csv"
@@ -148,32 +157,47 @@ class ImmoDataScraper:
         # 3. Create adaptive generator and browser manager
         from .url_generator import AdaptiveUrlGenerator
         adaptive_generator = AdaptiveUrlGenerator(self.url_generator)
-        browser_manager = BrowserManager()
+        browser_manager = BrowserManager(sleep_time=0.1)  # Reduced sleep time
         
-        # 4. Extract properties with adaptive approach
+        # 4. Extract properties with concurrent processing
         all_properties = []
         
-        for i, url_data in enumerate(urls):
-            logger.info(f"Processing URL {i+1}/{len(urls)}")
+        # Create semaphore to limit concurrent requests (10x faster processing)
+        semaphore = asyncio.Semaphore(10)  # Allow up to 10 concurrent requests
+        
+        async def process_url(i: int, url_data: Dict) -> Tuple[int, List[Dict], bool]:
+            """Process a single URL with semaphore control"""
+            async with semaphore:
+                logger.info(f"Processing URL {i+1}/{len(urls)}")
+                
+                # Extract with adaptation if necessary
+                properties, count, was_subdivided = await browser_manager.extract_properties_with_count(
+                    url_data, adaptive_generator
+                )
+                
+                return i, properties, was_subdivided
+        
+        # Process all URLs concurrently
+        tasks = [process_url(i, url_data) for i, url_data in enumerate(urls)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Cleanup browser resources
+        await browser_manager.cleanup()
+        
+        # Collect results
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error(f"Error processing URL: {result}")
+                continue
+                
+            i, properties, was_subdivided = result
             
-            # Extract with adaptation if necessary - now always collect properties
-            properties, count, was_subdivided = await browser_manager.extract_properties_with_count(
-                url_data, adaptive_generator
-            )
-            
-            # Always add properties, regardless of subdivision status
             if properties:
                 all_properties.extend(properties)
                 logger.info(f"Added {len(properties)} properties from URL {i+1}")
                 
-                # Log whether this URL was subdivided
                 if was_subdivided:
                     logger.info(f"Properties include those from main URL and its subdivisions")
-            
-            logger.info(f"Total: {len(all_properties)} properties extracted so far")
-            
-            # Pause between URLs to avoid overloading the server
-            await asyncio.sleep(1.0)
         
         logger.info(f"Extraction completed: {len(all_properties)} properties extracted in total (before deduplication)")
         return all_properties

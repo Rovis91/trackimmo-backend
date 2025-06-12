@@ -250,26 +250,53 @@ class EnrichmentOrchestrator:
                         existing_city = supabase_client.table("cities").select("*").eq("city_id", city_id).execute()
                         
                         if existing_city.data and len(existing_city.data) > 0:
-                            city_data = existing_city.data[0]
-                            # Check if we have price data
-                            if (city_data.get('house_price_avg') is not None or 
-                                city_data.get('apartment_price_avg') is not None):
-                                self.logger.debug(f"City {city_name} already has price data - skipping")
-                                skipped_count += 1
-                                continue
+                            city_data_existing = existing_city.data[0]
+                            
+                            # Check if city was scraped in the last year (365 days)
+                            last_scraped = city_data_existing.get('last_scraped')
+                            if last_scraped:
+                                try:
+                                    from datetime import datetime, timedelta
+                                    # Handle different date formats
+                                    if 'T' in last_scraped:
+                                        last_scraped_date = datetime.fromisoformat(last_scraped.replace('Z', '+00:00'))
+                                    else:
+                                        last_scraped_date = datetime.fromisoformat(last_scraped)
+                                    
+                                    # Skip if scraped within the last year (365 days)
+                                    days_since_scraped = (datetime.now() - last_scraped_date.replace(tzinfo=None)).days
+                                    if days_since_scraped <= 365:
+                                        self.logger.info(f"City {city_name} was scraped {days_since_scraped} days ago - skipping (less than 365 days)")
+                                        skipped_count += 1
+                                        continue
+                                    else:
+                                        self.logger.info(f"City {city_name} was scraped {days_since_scraped} days ago - needs update")
+                                except (ValueError, TypeError) as e:
+                                    self.logger.warning(f"Could not parse last_scraped date for {city_name}: {last_scraped} - {str(e)}")
+                            
+                            # Also check if we have price data (secondary check)
+                            if (city_data_existing.get('house_price_avg') is not None or 
+                                city_data_existing.get('apartment_price_avg') is not None) and not last_scraped:
+                                self.logger.debug(f"City {city_name} already has price data but no last_scraped timestamp")
                         
                         # Scrape city data
                         self.logger.info(f"Scraping city data for {city_name} ({postal_code})")
-                        city_data = await city_scraper.scrape_city(city_name, postal_code, city_id)
+                        city_data = await city_scraper.scrape_city(city_name, postal_code)  # Don't pass city_id as insee_code
                         
                         if city_data.get('status') == 'success':
                             # Update or insert city data
+                            # Ensure data fits database constraints
+                            postal_code_clean = postal_code[:5] if postal_code else None
+                            department_clean = city_data.get('department', '')[:5] if city_data.get('department') else None
+                            
+                            self.logger.info(f"Debug database insert: postal_code='{postal_code_clean}' (len={len(postal_code_clean) if postal_code_clean else 0}), department='{department_clean}' (len={len(department_clean) if department_clean else 0})")
+                            
                             city_record = {
                                 'city_id': city_id,
                                 'name': city_name,
-                                'postal_code': postal_code,
+                                'postal_code': postal_code_clean,
                                 'insee_code': city_data.get('insee_code'),
-                                'department': city_data.get('department'),
+                                'department': department_clean,
                                 'region': city_data.get('region'),
                                 'house_price_avg': city_data.get('house_price_avg'),
                                 'apartment_price_avg': city_data.get('apartment_price_avg'),

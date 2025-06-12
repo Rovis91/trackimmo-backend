@@ -11,6 +11,7 @@ import urllib.parse
 from typing import List, Dict, Optional, Tuple, Set
 
 from trackimmo.utils.logger import get_logger
+from trackimmo.config import settings
 
 logger = get_logger(__name__)
 
@@ -48,12 +49,17 @@ class UrlGenerator:
         self,
         rectangles: List[Dict],
         property_types: List[str],
-        start_date: str = "01/2014",
-        end_date: str = "12/2024"
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
     ) -> List[Dict]:
         """
         Generates URLs for each rectangle and month, initially combining all types.
         """
+        if start_date is None:
+            start_date = settings.SCRAPER_DEFAULT_START_DATE
+        if end_date is None:
+            end_date = settings.SCRAPER_DEFAULT_END_DATE
+        
         logger.info(f"Generating URLs for {len(rectangles)} rectangles, {len(property_types)} property types")
         logger.info(f"Date range: {start_date} to {end_date}")
         
