@@ -302,7 +302,7 @@ class AdaptiveUrlGenerator:
                 "subdivision_level": 1  # First level of subdivision
             })
         
-        logger.info(f"Level 1 subdivision: {len(result)} URLs by property type")
+        logger.debug(f"Level 1 subdivision: {len(result)} URLs by property type")
         return result
 
     def _subdivide_by_dynamic_price_ranges(
@@ -387,8 +387,8 @@ class AdaptiveUrlGenerator:
         # Detailed log of generated price ranges
         ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
         strategy = "aggressive" if use_aggressive_division else "standard"
-        logger.info(f"Level 2 subdivision: {len(result)} URLs by price ranges ({strategy} strategy)")
-        logger.info(f"Generated price ranges: {', '.join(ranges_str)}")
+        logger.debug(f"Level 2 subdivision: {len(result)} URLs by price ranges ({strategy} strategy)")
+        logger.debug(f"Generated price ranges: {', '.join(ranges_str)}")
         
         return result
     
@@ -518,10 +518,10 @@ class AdaptiveUrlGenerator:
         
         # Detailed log of generated price ranges
         ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
-        logger.info(f"Level 3 subdivision: {len(result)} URLs by refined price ranges")
+        logger.debug(f"Level 3 subdivision: {len(result)} URLs by refined price ranges")
         strategy = "aggressive" if use_aggressive_division else "standard"
-        logger.info(f"Using {strategy} subdivision strategy with {num_divisions} divisions")
-        logger.info(f"Refined price ranges: {', '.join(ranges_str)}")
+        logger.debug(f"Using {strategy} subdivision strategy with {num_divisions} divisions")
+        logger.debug(f"Refined price ranges: {', '.join(ranges_str)}")
         
         return result
         
@@ -618,8 +618,8 @@ class AdaptiveUrlGenerator:
         
         # Detailed log of generated price ranges
         ranges_str = [f"{int(min_p)}-{int(max_p)}" for min_p, max_p in price_ranges]
-        logger.info(f"Level {subdivision_level+1} deep subdivision: {len(result)} URLs by binary price ranges")
-        logger.info(f"Deep price ranges: {', '.join(ranges_str)}")
+        logger.debug(f"Level {subdivision_level+1} deep subdivision: {len(result)} URLs by binary price ranges")
+        logger.debug(f"Deep price ranges: {', '.join(ranges_str)}")
         
         return result
     
@@ -679,7 +679,7 @@ class AdaptiveUrlGenerator:
         ranges.append((p95, self.max_price))
         
         # Log statistics
-        logger.info(f"Price analysis: {len(prices)} properties, 5%={p05}, 95%={p95}")
+        logger.debug(f"Price analysis: {len(prices)} properties, 5%={p05}, 95%={p95}")
         
         return ranges
     

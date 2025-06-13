@@ -201,7 +201,7 @@ class BrowserManager:
                     # Process each URL
                     for index, url_data in enumerate(urls):
                         url = url_data["url"]
-                        logger.info(f"Processing URL {index+1}/{len(urls)}: {url[:100]}...")
+                        logger.debug(f"Processing URL {index+1}/{len(urls)}: {url[:100]}...")
                         
                         # Extract properties with retry
                         properties = await self._extract_from_url(
@@ -352,7 +352,7 @@ class BrowserManager:
                     
                 real_property_elements.append(element)
             
-            logger.info(f"Found {len(property_elements)} total elements, {len(real_property_elements)} real property elements")
+            logger.debug(f"Found {len(property_elements)} total elements, {len(real_property_elements)} real property elements")
             
             for element in real_property_elements:
                 try:
@@ -454,7 +454,7 @@ class BrowserManager:
                     else:
                         # Log successful extractions for first few properties
                         if len(properties) < 5:
-                            logger.info(f"Property {len(properties)+1}: Successfully extracted type '{property_type}' from '{raw_property_type}'")
+                            logger.debug(f"Property {len(properties)+1}: Successfully extracted type '{property_type}' from '{raw_property_type}'")
 
                     # Extract address and city
                     address, city, postal_code = self._parse_address(
@@ -665,9 +665,9 @@ class BrowserManager:
         property_type = url_data.get("property_type", "all types")
         property_types_str = ",".join(url_data.get("property_types", []))
 
-        logger.info(f"Processing URL (depth={recursion_depth}, level={subdivision_level})")
-        logger.info(f"Type: {property_type}, Types included: {property_types_str}, Price: {price_range}")
-        logger.info(f"Complete URL: {url}")
+        logger.debug(f"Processing URL (depth={recursion_depth}, level={subdivision_level})")
+        logger.debug(f"Type: {property_type}, Types included: {property_types_str}, Price: {price_range}")
+        logger.debug(f"Complete URL: {url}")
                 
         all_properties = []
         was_subdivided = False
@@ -716,7 +716,7 @@ class BrowserManager:
                         # Always collect properties from subdivisions
                         if sub_props:
                             all_properties.extend(sub_props)
-                            logger.info(f"Added {len(sub_props)} properties from subdivision {sub_url_data['property_type']}")
+                            logger.debug(f"Added {len(sub_props)} properties from subdivision {sub_url_data['property_type']}")
                         
                         # Pause between requests
                         await asyncio.sleep(self.sleep_time)

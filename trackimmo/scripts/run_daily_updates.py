@@ -64,7 +64,7 @@ def main():
     # Process each client
     for client in clients:
         try:
-            logger.info(f"Processing client {client['client_id']}")
+            logger.debug(f"Processing client {client['client_id']}")
             response = requests.post(
                 f"{settings.API_BASE_URL}/api/process-client",
                 json={"client_id": client["client_id"]},

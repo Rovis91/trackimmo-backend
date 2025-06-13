@@ -237,7 +237,7 @@ class DPEEnrichmentService(ProcessorBase):
                 self.save_sample_dpe(location_id, dpe_data)
                 
                 # Prepare DPE data for matching
-                self.logger.info(f"Preparing DPE data for matching: {location_type} {location_id}")
+                self.logger.debug(f"Preparing DPE data for matching: {location_type} {location_id}")
                 dpe_data = self.prepare_dpe_data_for_matching(dpe_data)
                 
                 if dpe_data is None or dpe_data.empty:

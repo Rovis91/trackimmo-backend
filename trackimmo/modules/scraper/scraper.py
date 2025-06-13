@@ -168,7 +168,7 @@ class ImmoDataScraper:
         async def process_url(i: int, url_data: Dict) -> Tuple[int, List[Dict], bool]:
             """Process a single URL with semaphore control"""
             async with semaphore:
-                logger.info(f"Processing URL {i+1}/{len(urls)}")
+                logger.debug(f"Processing URL {i+1}/{len(urls)}")
                 
                 # Extract with adaptation if necessary
                 properties, count, was_subdivided = await browser_manager.extract_properties_with_count(
@@ -194,10 +194,10 @@ class ImmoDataScraper:
             
             if properties:
                 all_properties.extend(properties)
-                logger.info(f"Added {len(properties)} properties from URL {i+1}")
+                logger.debug(f"Added {len(properties)} properties from URL {i+1}")
                 
                 if was_subdivided:
-                    logger.info(f"Properties include those from main URL and its subdivisions")
+                    logger.debug(f"Properties include those from main URL and its subdivisions")
         
         logger.info(f"Extraction completed: {len(all_properties)} properties extracted in total (before deduplication)")
         return all_properties

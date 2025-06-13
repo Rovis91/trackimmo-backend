@@ -87,9 +87,9 @@ class Settings(BaseSettings):
     DPE_CACHE_DURATION_DAYS: int = 30
     
     # Logging
-    LOG_LEVEL: str = "ERROR"
-    LOG_FILE_MAX_SIZE: int = 10  # MB
-    LOG_FILE_BACKUP_COUNT: int = 5
+    LOG_LEVEL: str = "INFO"
+    LOG_FILE_MAX_SIZE: int = 10  # MB (deprecated - using TimedRotatingFileHandler now)
+    LOG_FILE_BACKUP_COUNT: int = 30  # Days of log retention
     
     # Metrics
     ENABLE_METRICS: bool = True

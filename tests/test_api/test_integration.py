@@ -40,7 +40,7 @@ class TestHealthAndBasics:
         response = client.get("/version")
         assert response.status_code == 200
         data = response.json()
-        assert data["version"] == "1.0.1"
+        assert data["version"] == "1.0.2"
     
     def test_admin_health_check(self):
         """Test admin health check."""

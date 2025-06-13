@@ -56,7 +56,7 @@ class GeocodingService(ProcessorBase):
             result_df = pd.DataFrame()
             
             for i, chunk_df in enumerate(chunks):
-                self.logger.info(f"Traitement du lot {i+1}/{len(chunks)} ({len(chunk_df)} adresses)")
+                self.logger.debug(f"Traitement du lot {i+1}/{len(chunks)} ({len(chunk_df)} adresses)")
                 
                 # Préparer les données pour le géocodage
                 # Convertir les colonnes en chaînes pour éviter les problèmes de type
@@ -177,8 +177,8 @@ class GeocodingService(ProcessorBase):
                 csv_content = csv_buffer.getvalue()
                 
                 # Pour le débogage
-                self.logger.info(f"Envoi du CSV avec les colonnes: {list(df.columns)}")
-                self.logger.info(f"Exemple de première ligne: {df.iloc[0].to_dict() if not df.empty else 'DataFrame vide'}")
+                self.logger.debug(f"Envoi du CSV avec les colonnes: {list(df.columns)}")
+                self.logger.debug(f"Exemple de première ligne: {df.iloc[0].to_dict() if not df.empty else 'DataFrame vide'}")
                 
                 # Appeler l'API de géocodage
                 files = {'data': ('addresses.csv', csv_content.encode('utf-8'), 'text/csv')}
@@ -192,9 +192,9 @@ class GeocodingService(ProcessorBase):
                     result_df = pd.read_csv(io.StringIO(response.content.decode('utf-8')))
                     
                     # Vérifier les colonnes reçues
-                    self.logger.info(f"Colonnes reçues: {list(result_df.columns)}")
+                    self.logger.debug(f"Colonnes reçues: {list(result_df.columns)}")
                     if not result_df.empty:
-                        self.logger.info(f"Exemple de résultat: {result_df.iloc[0].to_dict()}")
+                        self.logger.debug(f"Exemple de résultat: {result_df.iloc[0].to_dict()}")
                     
                     return result_df
                 else:
