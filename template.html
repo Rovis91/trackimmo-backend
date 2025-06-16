@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirmation de votre inscription</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: #343a40;
+      margin: 0;
+      padding: 0;
+      background-color: #f8f9fa;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    }
+    .header {
+      text-align: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e9ecef;
+    }
+    .logo {
+      max-width: 150px;
+      height: auto;
+    }
+    .content {
+      padding: 20px 0;
+    }
+    .button {
+      display: inline-block;
+      background: linear-gradient(45deg, #6c63ff, #8b84ff);
+      color: white;
+      text-decoration: none;
+      padding: 12px 25px;
+      border-radius: 30px;
+      font-weight: 600;
+      margin: 20px 0;
+      text-align: center;
+      box-shadow: 0 4px 15px rgba(108, 99, 255, 0.3);
+    }
+    .button:hover {
+      background: linear-gradient(45deg, #5046e5, #6c63ff);
+      box-shadow: 0 6px 20px rgba(108, 99, 255, 0.4);
+    }
+    .footer {
+      text-align: center;
+      padding-top: 20px;
+      border-top: 1px solid #e9ecef;
+      color: #6c757d;
+      font-size: 14px;
+    }
+    h1 {
+      color: #343a40;
+      font-size: 24px;
+      font-weight: 600;
+      margin-top: 0;
+    }
+    p {
+      margin: 0 0 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="https://staging.trackimmo.app/_next/image?url=%2Fassets%2Fimages%2Fti-logo.png&w=64&q=75" alt="Track Immo" class="logo" width="150" height="50">
+    </div>
+    
+    <div class="content">
+      <h1>Confirmez votre adresse email</h1>
+      
+      <p>Bonjour {{ .Email }},</p>
+      
+      <p>Merci de vous être inscrit sur Track Immo. Pour finaliser votre inscription et accéder à votre compte, veuillez confirmer votre adresse email en cliquant sur le bouton ci-dessous :</p>
+      
+      <div style="text-align: center;">
+        <a href="{{ .ConfirmationURL }}" class="button">Confirmer mon email</a>
+      </div>
+      
+      <p>Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet email.</p>
+      
+      <p>Ce lien de confirmation expire dans 24 heures.</p>
+      
+      <p>Nous sommes ravis de vous compter parmi nos utilisateurs !</p>
+      
+      <p>Bien cordialement,<br>
+      L'équipe Track Immo<br></p>
+    </div>
+    
+    <div class="footer">
+      <p>© 2025 Track Immo. Tous droits réservés.</p>
+      <p>Si vous avez des questions, contactez-nous à <a href="mailto:contact@trackimmo.app">contact@trackimmo.app</a></p>
+    </div>
+  </div>
+</body>
+</html>

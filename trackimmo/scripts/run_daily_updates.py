@@ -7,6 +7,7 @@ import sys
 import logging
 import time
 import calendar
+import asyncio
 from datetime import datetime
 import requests
 
@@ -16,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trackimmo.config import settings
 from trackimmo.utils.logger import get_logger
 from trackimmo.modules.db_manager import DBManager
+from trackimmo.utils.email_sender import send_monthly_notification
 
 logger = get_logger("daily_updates")
 
@@ -42,6 +44,61 @@ def get_clients_for_update(day):
             .execute()
         return response.data
 
+def get_clients_for_notification(day):
+    """
+    Get clients scheduled for notification (day before their send_day).
+    
+    Args:
+        day: Day of the month (tomorrow's date)
+        
+    Returns:
+        List of client data
+    """
+    with DBManager() as db:
+        response = db.get_client().table("clients").select("*") \
+            .eq("status", "active") \
+            .eq("send_day", day) \
+            .execute()
+        return response.data
+
+async def send_monthly_notifications():
+    """Send monthly notifications to clients scheduled for tomorrow."""
+    tomorrow = datetime.now().day + 1
+    days_in_month = calendar.monthrange(datetime.now().year, datetime.now().month)[1]
+    
+    # Handle end of month case
+    if tomorrow > days_in_month:
+        tomorrow = 1  # Next month's first day
+    
+    # Get clients scheduled for tomorrow
+    clients_for_notification = get_clients_for_notification(tomorrow)
+    logger.info(f"Found {len(clients_for_notification)} clients for monthly notification (send_day={tomorrow})")
+    
+    # Also handle end-of-month edge cases for notification
+    if is_last_day_of_month():
+        logger.info("Today is the last day of the month, checking additional notification days")
+        for day in range(tomorrow + 1, 32):  # Check days 29, 30, 31 if tomorrow is 28
+            additional_clients = get_clients_for_notification(day)
+            clients_for_notification.extend(additional_clients)
+            logger.info(f"Added {len(additional_clients)} clients for notification with send_day={day}")
+    
+    # Send monthly notifications
+    for client in clients_for_notification:
+        try:
+            logger.debug(f"Sending monthly notification to client {client['client_id']}")
+            success = await send_monthly_notification(client)
+            
+            if success:
+                logger.info(f"Monthly notification sent successfully to client {client['client_id']} ({client.get('email')})")
+            else:
+                logger.error(f"Failed to send monthly notification to client {client['client_id']}")
+                
+            # Add a small delay between emails to avoid overwhelming the SMTP server
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            logger.error(f"Failed to send monthly notification to client {client['client_id']}: {str(e)}")
+
 def main():
     """Run daily client updates."""
     logger.info("Starting daily client updates")
@@ -49,9 +106,20 @@ def main():
     # Get current day of month
     today = datetime.now().day
     
+    # First, send monthly notifications for tomorrow's clients
+    logger.info("Sending monthly notifications for tomorrow's clients")
+    try:
+        # Run async function in sync context
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(send_monthly_notifications())
+        loop.close()
+    except Exception as e:
+        logger.error(f"Error sending monthly notifications: {str(e)}")
+    
     # Get clients matching today's day
     clients = get_clients_for_update(today)
-    logger.info(f"Found {len(clients)} clients scheduled for today (day {today})")
+    logger.info(f"Found {len(clients)} clients scheduled for processing today (day {today})")
     
     # Handle month-end edge case
     if is_last_day_of_month():

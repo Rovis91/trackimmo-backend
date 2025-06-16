@@ -34,15 +34,15 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str = ""
     
     # API configuration
-    API_BASE_URL: str = "http://localhost:8000"
+    API_BASE_URL: str = ""  # Load from .env
 
     # Email configuration
-    EMAIL_SENDER: str = ""
-    SMTP_SERVER: str = "smtp.hostinger.com"
-    SMTP_PORT: int = 465
-    SMTP_USERNAME: str = ""
-    SMTP_PASSWORD: str = ""
-    CTO_EMAIL: str = "netechoppe@proton.me"
+    EMAIL_SENDER: str = ""  # Load from .env
+    SMTP_SERVER: str = ""  # Load from .env
+    SMTP_PORT: int = 465  # Default port, can be overridden in .env
+    SMTP_USERNAME: str = ""  # Load from .env
+    SMTP_PASSWORD: str = ""  # Load from .env
+    CTO_EMAIL: str = ""  # Load from .env
     
     # Email settings
     EMAIL_MAX_RETRIES: int = 3

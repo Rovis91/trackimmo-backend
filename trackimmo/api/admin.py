@@ -14,7 +14,9 @@ from trackimmo.utils.email_sender import (
     test_email_configuration,
     send_welcome_email,
     send_client_notification,
-    send_error_notification_async
+    send_error_notification_async,
+    send_monthly_notification,
+    send_insufficient_addresses_notification
 )
 
 logger = get_logger(__name__)
@@ -25,7 +27,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Request models
 class TestEmailRequest(BaseModel):
     recipient: str
-    template_type: str = "notification"  # notification, welcome, error
+    template_type: str = "notification"  # notification, welcome, error, monthly, insufficient
 
 class TestClientProcessingRequest(BaseModel):
     client_id: str
@@ -207,6 +209,30 @@ async def test_email_endpoint(
                 "message": f"Notification email {'sent' if success else 'failed'} to {request.recipient}"
             }
         
+        elif request.template_type == "monthly":
+            # Test monthly notification email
+            test_client = {
+                "first_name": "Test",
+                "last_name": "User",
+                "email": request.recipient,
+                "client_id": "test-client-id",
+                "send_day": 15
+            }
+            
+            success = await send_monthly_notification(test_client)
+            return {
+                "success": success,
+                "message": f"Monthly notification email {'sent' if success else 'failed'} to {request.recipient}"
+            }
+        
+        elif request.template_type == "insufficient":
+            # Test insufficient addresses notification to CTO
+            success = await send_insufficient_addresses_notification("test-client-id", 3, 10)
+            return {
+                "success": success,
+                "message": f"Insufficient addresses notification {'sent' if success else 'failed'}"
+            }
+        
         elif request.template_type == "error":
             # Test error notification
             success = await send_error_notification_async("test-client-id", "This is a test error message")
@@ -216,7 +242,7 @@ async def test_email_endpoint(
             }
         
         else:
-            raise HTTPException(status_code=400, detail="Invalid template type")
+            raise HTTPException(status_code=400, detail="Invalid template type. Valid types: config, welcome, notification, monthly, insufficient, error")
             
     except Exception as e:
         logger.error(f"Error testing email: {str(e)}")

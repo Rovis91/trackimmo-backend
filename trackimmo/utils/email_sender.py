@@ -13,7 +13,9 @@ from trackimmo.utils.logger import get_logger
 from trackimmo.utils.email_templates import (
     get_client_notification_template,
     get_error_notification_template,
-    get_welcome_template
+    get_welcome_template,
+    get_monthly_notification_template,
+    get_insufficient_addresses_template
 )
 
 logger = get_logger(__name__)
@@ -30,6 +32,17 @@ async def send_client_notification(client: Dict[str, Any], new_addresses: List[D
     if not recipient:
         logger.error(f"No email address found for client {client.get('client_id')}")
         return False
+    
+    # Check if we have enough addresses - if not, notify CTO
+    requested_count = client.get("addresses_per_report", 10)
+    if len(new_addresses) < requested_count:
+        logger.warning(f"Client {client.get('client_id')} received {len(new_addresses)} addresses but requested {requested_count}")
+        # Send alert to CTO about insufficient addresses
+        await send_insufficient_addresses_notification(
+            client.get('client_id'), 
+            len(new_addresses), 
+            requested_count
+        )
     
     try:
         # Generate HTML content
@@ -56,6 +69,81 @@ async def send_client_notification(client: Dict[str, Any], new_addresses: List[D
         
     except Exception as e:
         logger.error(f"Error sending client notification to {recipient}: {str(e)}")
+        return False
+
+async def send_monthly_notification(client: Dict[str, Any]):
+    """
+    Send monthly notification email to client about upcoming addresses.
+    
+    Args:
+        client: Client data
+    """
+    recipient = client.get("email")
+    if not recipient:
+        logger.error(f"No email address found for client {client.get('client_id')}")
+        return False
+    
+    try:
+        # Generate HTML content
+        html_content = get_monthly_notification_template(client)
+        
+        first_name = client.get('first_name', '')
+        subject = f"TrackImmo: Vos nouvelles propriétés arrivent{', ' + first_name if first_name else ''} ! 📅"
+        
+        # Send HTML email
+        success = await send_email_async(
+            recipient=recipient,
+            subject=subject,
+            html_body=html_content,
+            priority="normal"
+        )
+        
+        if success:
+            logger.info(f"Monthly notification sent successfully to {recipient}")
+        else:
+            logger.error(f"Failed to send monthly notification to {recipient}")
+            
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error sending monthly notification to {recipient}: {str(e)}")
+        return False
+
+async def send_insufficient_addresses_notification(client_id: str, found_count: int, requested_count: int):
+    """
+    Send notification to CTO when not enough addresses are found for a client.
+    
+    Args:
+        client_id: The client ID
+        found_count: Number of addresses found
+        requested_count: Number of addresses requested
+    """
+    if not settings.CTO_EMAIL:
+        logger.warning("No CTO email configured for insufficient addresses notifications")
+        return False
+    
+    try:
+        # Generate HTML content
+        html_content = get_insufficient_addresses_template(client_id, found_count, requested_count)
+        
+        subject = f"⚠️ TrackImmo Alert: Adresses insuffisantes ({client_id[:8]}...)"
+        
+        success = await send_email_async(
+            recipient=settings.CTO_EMAIL,
+            subject=subject,
+            html_body=html_content,
+            priority="high"
+        )
+        
+        if success:
+            logger.info(f"Insufficient addresses notification sent to CTO for client {client_id} ({found_count}/{requested_count})")
+        else:
+            logger.error(f"Failed to send insufficient addresses notification to CTO for client {client_id}")
+            
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error sending insufficient addresses notification: {str(e)}")
         return False
 
 def send_error_notification(client_id: str, error_message: Optional[str] = None):

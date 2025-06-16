@@ -115,8 +115,9 @@ Process a client to assign new properties following business rules.
 2. Updates client's city data if stale (>90 days)
 3. Scrapes new properties if insufficient data (<50 properties in 6-8 year range)
 4. Assigns properties using weighted selection (favoring older properties)
-5. Sends email notification if successful
-6. Returns immediately with job ID for tracking
+5. **Sends email notification if successful** ✅
+6. **Sends CTO alert if insufficient addresses found** ✅
+7. Returns immediately with job ID for tracking
 
 ### **POST /api/add-addresses**
 
@@ -403,7 +404,25 @@ List processing jobs with optional filtering.
 ]
 ```
 
-## Email Testing
+## Email System
+
+### Email Templates
+
+The API includes **five HTML email templates** with clean, simple design matching Supabase style:
+
+1. **Client Notification**: New property assignments ✅
+2. **Welcome**: New client onboarding ✅
+3. **Monthly Notification**: Pre-notification about upcoming addresses ✨ **NEW**
+4. **Error Alert**: Admin notifications for failures ✅
+5. **Insufficient Addresses**: CTO alert when not enough properties found ✨ **NEW**
+
+### Template Features
+
+- **Clean Design**: Simple, readable layout matching Supabase template style
+- **TrackImmo Branding**: Consistent colors (#6c63ff, #8b84ff) and logo
+- **Responsive**: Mobile and desktop compatible
+- **Professional**: Modern design with clear call-to-actions
+- **Fallback Support**: Plain text versions for compatibility
 
 ### **POST /admin/test-email**
 
@@ -416,15 +435,17 @@ Test email functionality with different templates.
 ```json
 {
   "recipient": "test@example.com",
-  "template_type": "notification"  // config, welcome, notification, error
+  "template_type": "notification"  // config, welcome, notification, monthly, insufficient, error
 }
 ```
 
 **Template Types:**
 
-- `config`: Tests SMTP configuration
+- `config`: Tests SMTP configuration and sends test email
 - `welcome`: Sends welcome email template
 - `notification`: Sends property notification template  
+- `monthly`: Sends monthly pre-notification template ✨ **NEW**
+- `insufficient`: Sends insufficient addresses alert to CTO ✨ **NEW**
 - `error`: Sends admin error notification
 
 **Response:**
@@ -440,6 +461,35 @@ Test email functionality with different templates.
   }
 }
 ```
+
+### Email Flow
+
+#### Daily Processing Flow
+
+1. **Monthly Notifications** (runs first):
+   - Checks clients scheduled for tomorrow's `send_day`
+   - Sends monthly pre-notification emails ✨ **NEW**
+   - Handles end-of-month edge cases
+
+2. **Client Processing**:
+   - Processes clients matching today's `send_day`
+   - Assigns new properties
+   - Sends notification emails on success
+   - Sends CTO alert if insufficient addresses ✨ **NEW**
+
+3. **Retry Queue**:
+   - Processes failed jobs
+   - Sends CTO error notification after 3 failed attempts
+
+#### Notification Triggers
+
+| Event | Email Sent | Recipient |
+|-------|------------|-----------|
+| Successful property assignment | Client Notification | Client |
+| Insufficient addresses found | Insufficient Addresses Alert | CTO |
+| Day before send_day | Monthly Notification | Client |
+| Job fails 3 times | Error Notification | CTO |
+| New client registration | Welcome Email | Client |
 
 ## Testing & Utilities
 
@@ -539,29 +589,13 @@ The API uses standard HTTP status codes and returns detailed error information:
 - Jobs automatically retry up to 3 times with exponential backoff
 - Permanent errors (missing client, invalid configuration) are not retried
 - Failed jobs after max retries trigger admin notifications
+- **CTO receives email alerts for permanent failures** ✅
 
 ## Rate Limiting
 
 - Default: 100 requests per hour per API key
 - Configurable via `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW` settings
 - Rate limiting can be disabled with `RATE_LIMIT_ENABLED=false`
-
-## Email Templates
-
-The API includes three HTML email templates with TrackImmo branding:
-
-### Template Features
-
-- **Responsive Design**: Mobile and desktop compatible
-- **TrackImmo Branding**: Colors (#6565f1, #e9489d) and logo
-- **Professional Layout**: Modern design with statistics and property previews
-- **Fallback Support**: Plain text versions for compatibility
-
-### Template Types
-
-1. **Client Notification**: New property assignments
-2. **Welcome**: New client onboarding  
-3. **Error Alert**: Admin notifications for failures
 
 ## Configuration
 
@@ -575,8 +609,11 @@ API_KEY=cb67274b99d89ab5
 
 # Email (required for notifications)
 EMAIL_SENDER=noreply@trackimmo.app
+SMTP_SERVER=smtp.hostinger.com
+SMTP_PORT=587
 SMTP_USERNAME=your_smtp_user
 SMTP_PASSWORD=your_smtp_password
+CTO_EMAIL=netechoppe@proton.me  # Required for error/alert notifications
 
 # Optional
 ADMIN_API_KEY=cb67274b99d89ab5
@@ -642,12 +679,55 @@ curl -X POST \
      -d '{"recipient": "test@example.com", "template_type": "config"}' \
      http://147.93.94.3:8000/admin/test-email
 
-# Test notification template
+# Test client notification template
 curl -X POST \
      -H "X-Admin-Key: cb67274b99d89ab5" \
      -H "Content-Type: application/json" \
      -d '{"recipient": "test@example.com", "template_type": "notification"}' \
      http://147.93.94.3:8000/admin/test-email
+
+# Test monthly notification template ✨ NEW
+curl -X POST \
+     -H "X-Admin-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"recipient": "test@example.com", "template_type": "monthly"}' \
+     http://147.93.94.3:8000/admin/test-email
+
+# Test insufficient addresses alert ✨ NEW
+curl -X POST \
+     -H "X-Admin-Key: cb67274b99d89ab5" \
+     -H "Content-Type: application/json" \
+     -d '{"recipient": "cto@company.com", "template_type": "insufficient"}' \
+     http://147.93.94.3:8000/admin/test-email
+```
+
+### Running Daily Updates Script
+
+```bash
+# Run daily updates (includes monthly notifications + client processing)
+python trackimmo/scripts/run_daily_updates.py
+
+# Test email functionality comprehensively
+python trackimmo/scripts/test_email_functionality.py --recipient test@example.com
+
+# Test specific email template
+python trackimmo/scripts/test_email_functionality.py --recipient test@example.com --test monthly
+```
+
+## Daily Automation
+
+The `run_daily_updates.py` script handles:
+
+1. **Monthly Notifications**: Sent the day before each client's `send_day`
+2. **Client Processing**: Assigns new properties to clients on their `send_day`
+3. **Retry Queue**: Processes failed jobs with exponential backoff
+4. **Error Handling**: Sends CTO alerts for persistent failures
+
+### Cron Job Setup
+
+```bash
+# Run daily at 9 AM
+0 9 * * * cd /opt/trackimmo && python trackimmo/scripts/run_daily_updates.py >> logs/daily_updates.log 2>&1
 ```
 
 ## Support
@@ -658,5 +738,6 @@ For technical support or questions about the API:
 - **Health Monitoring**: Use `/admin/health` for system status
 - **Error Tracking**: Failed jobs are logged and can be monitored via `/admin/jobs`
 - **Email Testing**: Use `/admin/test-email` to verify email configuration
+- **Comprehensive Testing**: Use `test_email_functionality.py` for full email verification
 
-The API is designed to be self-monitoring with comprehensive error handling and automatic retry mechanisms for robust operation.
+The API is designed to be self-monitoring with comprehensive error handling, automatic retry mechanisms, and email notifications for robust operation.
